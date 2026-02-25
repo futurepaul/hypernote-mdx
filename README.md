@@ -1,6 +1,6 @@
 # hypernote-mdx
 
-A Rust parser for MDX (Markdown + JSX), built for the [hypernote](https://github.com/nicksimpsonx/hypernote-spec) format. Parses MDX source into a compact AST, serializes to JSON, and renders back to canonical source.
+A Rust parser for MDX (Markdown + JSX), built for the [hypernote](https://github.com/futurepaul/hypernote-pages) format. A Rust port of [zig-mdx](https://github.com/futurepaul/zig-mdx). Parses MDX source into a compact AST, serializes to JSON, and renders back to canonical source.
 
 ## Usage
 
