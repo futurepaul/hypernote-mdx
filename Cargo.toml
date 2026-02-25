@@ -1,0 +1,15 @@
+[package]
+name = "hypernote-mdx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde_json = "1"
+
+[lib]
+name = "hypernote_mdx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mdx-parse"
+path = "src/main.rs"
