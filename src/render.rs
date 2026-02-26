@@ -73,6 +73,27 @@ fn can_render_jsx_inline(ast: &Ast, children: &[NodeIndex]) -> bool {
     child.tag == NodeTag::Text || child.tag == NodeTag::MdxTextExpression
 }
 
+fn can_render_all_jsx_children_inline(ast: &Ast, children: &[NodeIndex]) -> bool {
+    if children.is_empty() {
+        return true;
+    }
+
+    children.iter().all(|&child_idx| {
+        let child = &ast.nodes[child_idx as usize];
+        matches!(
+            child.tag,
+            NodeTag::Text
+                | NodeTag::Strong
+                | NodeTag::Emphasis
+                | NodeTag::CodeInline
+                | NodeTag::Link
+                | NodeTag::Image
+                | NodeTag::MdxTextExpression
+                | NodeTag::HardBreak
+        )
+    })
+}
+
 /// Check if a node is a "content block" that should have blank lines between siblings
 fn is_content_block(tag: NodeTag) -> bool {
     matches!(
@@ -225,6 +246,7 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                 output.push_str("> ");
                 render_node(ast, child_idx, output, ctx);
             }
+            output.push('\n');
         }
 
         NodeTag::ListUnordered => {
@@ -259,6 +281,10 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                 output.push_str("- ");
             } else {
                 output.push_str(&format!("{}. ", ctx.list_index));
+            }
+            let info = ast.list_item_info(node_idx);
+            if let Some(checked) = info.checked {
+                output.push_str(if checked { "[x] " } else { "[ ] " });
             }
             let children = ast.children(node_idx);
             for &child_idx in children {
@@ -344,7 +370,8 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                 &ast.extra_data[elem.children_start as usize..elem.children_end as usize];
             let children_as_nodes: Vec<NodeIndex> = children.to_vec();
 
-            let render_inline = can_render_jsx_inline(ast, &children_as_nodes);
+            let render_inline = can_render_jsx_inline(ast, &children_as_nodes)
+                || can_render_all_jsx_children_inline(ast, &children_as_nodes);
 
             write_indent(output, ctx.indent_level);
             output.push('<');
@@ -358,7 +385,9 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                     in_jsx: true,
                     ..*ctx
                 };
-                render_node(ast, children_as_nodes[0], output, &child_ctx);
+                for &child_idx in &children_as_nodes {
+                    render_node(ast, child_idx, output, &child_ctx);
+                }
             } else {
                 output.push('\n');
                 let mut prev_was_content_block = false;
@@ -451,34 +480,110 @@ fn render_jsx_attributes(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
         let attr_name = attr_name_raw.trim();
         output.push_str(attr_name);
 
-        if let Some(val_tok) = attr.value_token {
-            output.push('=');
-            let val_text_raw = ast.token_slice(val_tok);
-            let val_text = val_text_raw.trim();
-
-            if attr.value_type == JsxAttributeType::Expression {
+        match attr.value_type {
+            JsxAttributeType::Boolean => {
+                if let Some(val_tok) = attr.value_token {
+                    let raw = ast.token_slice(val_tok).trim();
+                    let bool_value = raw == "true";
+                    output.push('=');
+                    output.push('{');
+                    output.push_str(if bool_value { "true" } else { "false" });
+                    output.push('}');
+                }
+            }
+            JsxAttributeType::Expression => {
+                output.push('=');
                 output.push('{');
-                output.push_str(val_text);
+                if let Some(val_tok) = attr.value_token {
+                    let val_text = ast.token_slice(val_tok).trim();
+                    output.push_str(val_text);
+                }
                 output.push('}');
-            } else if val_text.len() >= 2
-                && val_text.starts_with('"')
-                && val_text.ends_with('"')
-            {
-                output.push_str(val_text);
-            } else if val_text.len() >= 2
-                && val_text.starts_with('\'')
-                && val_text.ends_with('\'')
-            {
+            }
+            JsxAttributeType::Number => {
+                output.push('=');
+                if let Some(val_tok) = attr.value_token {
+                    let raw = ast.token_slice(val_tok).trim();
+                    if let Ok(number) = raw.parse::<f64>() {
+                        output.push_str(&number.to_string());
+                    } else {
+                        let decoded = decode_jsx_quoted_value(raw);
+                        output.push('"');
+                        output.push_str(&escape_jsx_attribute_string(&decoded));
+                        output.push('"');
+                    }
+                } else {
+                    output.push('0');
+                }
+            }
+            JsxAttributeType::String => {
+                output.push('=');
+                let decoded = if let Some(val_tok) = attr.value_token {
+                    decode_jsx_quoted_value(ast.token_slice(val_tok))
+                } else {
+                    String::new()
+                };
                 output.push('"');
-                output.push_str(&val_text[1..val_text.len() - 1]);
-                output.push('"');
-            } else {
-                output.push('"');
-                output.push_str(val_text);
+                output.push_str(&escape_jsx_attribute_string(&decoded));
                 output.push('"');
             }
         }
     }
+}
+
+fn decode_jsx_quoted_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let inner = if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    let mut output = String::with_capacity(inner.len());
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if escaped {
+            match ch {
+                'n' => output.push('\n'),
+                'r' => output.push('\r'),
+                't' => output.push('\t'),
+                '\\' => output.push('\\'),
+                '"' => output.push('"'),
+                '\'' => output.push('\''),
+                other => {
+                    output.push('\\');
+                    output.push(other);
+                }
+            }
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+        } else {
+            output.push(ch);
+        }
+    }
+    if escaped {
+        output.push('\\');
+    }
+
+    output
+        .replace("&quot;", "\"")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
+}
+
+fn escape_jsx_attribute_string(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn extract_token_range_content<'a>(ast: &'a Ast, range: &Range) -> &'a str {
@@ -628,22 +733,40 @@ mod tests {
     fn roundtrip_json_frontmatter() {
         let source = "```hnmd\n{\"title\": \"Hello\"}\n```\n\n# Content\n";
         let ast1 = parser::parse(source);
-        assert!(ast1.errors.is_empty(), "First parse had errors: {:?}", ast1.errors);
+        assert!(
+            ast1.errors.is_empty(),
+            "First parse had errors: {:?}",
+            ast1.errors
+        );
 
         let rendered = render(&ast1);
-        assert!(rendered.starts_with("```hnmd\n"), "Rendered should start with ```hnmd, got: {}", rendered);
+        assert!(
+            rendered.starts_with("```hnmd\n"),
+            "Rendered should start with ```hnmd, got: {}",
+            rendered
+        );
 
         let ast2 = parser::parse(&rendered);
-        assert!(ast2.errors.is_empty(), "Second parse had errors: {:?}", ast2.errors);
+        assert!(
+            ast2.errors.is_empty(),
+            "Second parse had errors: {:?}",
+            ast2.errors
+        );
 
         // Both ASTs should have the same number of nodes
         assert_eq!(ast1.nodes.len(), ast2.nodes.len());
 
         // Both should have a Frontmatter node with JSON format
-        let fm1 = ast1.nodes.iter().enumerate()
+        let fm1 = ast1
+            .nodes
+            .iter()
+            .enumerate()
             .find(|(_, n)| n.tag == NodeTag::Frontmatter)
             .map(|(i, _)| i as NodeIndex);
-        let fm2 = ast2.nodes.iter().enumerate()
+        let fm2 = ast2
+            .nodes
+            .iter()
+            .enumerate()
             .find(|(_, n)| n.tag == NodeTag::Frontmatter)
             .map(|(i, _)| i as NodeIndex);
 

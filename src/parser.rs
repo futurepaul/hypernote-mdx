@@ -2,6 +2,19 @@ use crate::ast::*;
 use crate::token::{Tag as TokenTag, Token};
 use crate::tokenizer::Tokenizer;
 
+#[derive(Debug, Clone)]
+pub struct ParseOptions {
+    pub normalize_emoji_shortcodes: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        ParseOptions {
+            normalize_emoji_shortcodes: false,
+        }
+    }
+}
+
 pub struct Parser {
     source: String,
     token_tags: Vec<TokenTag>,
@@ -21,8 +34,18 @@ pub enum ParseError {
 type PResult<T> = Result<T, ParseError>;
 
 pub fn parse(source: &str) -> Ast {
+    parse_with_options(source, &ParseOptions::default())
+}
+
+pub fn parse_with_options(source: &str, options: &ParseOptions) -> Ast {
+    let source_owned = if options.normalize_emoji_shortcodes {
+        normalize_emoji_shortcodes(source)
+    } else {
+        source.to_string()
+    };
+
     // Phase 1: Tokenization
-    let mut tokenizer = Tokenizer::new(source);
+    let mut tokenizer = Tokenizer::new(&source_owned);
     let mut tokens: Vec<Token> = Vec::new();
 
     loop {
@@ -38,7 +61,7 @@ pub fn parse(source: &str) -> Ast {
     let token_starts: Vec<ByteOffset> = tokens.iter().map(|t| t.loc.start).collect();
 
     let mut parser = Parser {
-        source: source.to_string(),
+        source: source_owned.clone(),
         token_tags: token_tags.clone(),
         token_starts: token_starts.clone(),
         token_index: 0,
@@ -51,12 +74,82 @@ pub fn parse(source: &str) -> Ast {
     let _ = parser.parse_document();
 
     Ast {
-        source: source.to_string(),
+        source: source_owned,
         token_tags,
         token_starts,
         nodes: parser.nodes,
         extra_data: parser.extra_data,
         errors: parser.errors,
+    }
+}
+
+fn normalize_emoji_shortcodes(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut index: usize = 0;
+    let bytes = source.as_bytes();
+
+    while index < source.len() {
+        if bytes[index] == b':' {
+            if let Some((shortcode, end_index)) = parse_shortcode(source, index) {
+                if let Some(emoji) = shortcode_to_emoji(shortcode) {
+                    output.push_str(emoji);
+                    index = end_index;
+                    continue;
+                }
+            }
+        }
+
+        let ch = source[index..].chars().next().unwrap_or('\0');
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+
+    output
+}
+
+fn parse_shortcode(source: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = source.as_bytes();
+    let mut index = start + 1;
+
+    while index < bytes.len() {
+        let b = bytes[index];
+        let valid = b.is_ascii_alphanumeric() || b == b'_' || b == b'+' || b == b'-';
+        if !valid {
+            break;
+        }
+        index += 1;
+    }
+
+    if index == start + 1 || index >= bytes.len() || bytes[index] != b':' {
+        return None;
+    }
+
+    Some((&source[start + 1..index], index + 1))
+}
+
+fn shortcode_to_emoji(shortcode: &str) -> Option<&'static str> {
+    match shortcode {
+        "thumbsup" | "+1" => Some("👍"),
+        "thumbsdown" | "-1" => Some("👎"),
+        "wave" => Some("👋"),
+        "fire" => Some("🔥"),
+        "rocket" => Some("🚀"),
+        "sparkles" => Some("✨"),
+        "tada" => Some("🎉"),
+        "smile" => Some("😄"),
+        "heart" => Some("❤️"),
+        "white_check_mark" => Some("✅"),
+        "x" => Some("❌"),
+        "warning" => Some("⚠️"),
+        "thinking" => Some("🤔"),
+        "clap" => Some("👏"),
+        "eyes" => Some("👀"),
+        "point_up" => Some("☝️"),
+        "point_right" => Some("👉"),
+        "point_left" => Some("👈"),
+        "point_down" => Some("👇"),
+        "100" => Some("💯"),
+        _ => None,
     }
 }
 
@@ -134,6 +227,18 @@ impl Parser {
         start
     }
 
+    fn add_extra_list_item(&mut self, data: &ListItemData) -> u32 {
+        let start = self.extra_data.len() as u32;
+        self.extra_data.push(match data.checked {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        });
+        self.extra_data.push(data.children_start);
+        self.extra_data.push(data.children_end);
+        start
+    }
+
     fn add_extra_jsx_element(&mut self, elem: &JsxElement) -> u32 {
         let start = self.extra_data.len() as u32;
         self.extra_data.push(elem.name_token);
@@ -158,7 +263,12 @@ impl Parser {
         start
     }
 
-    fn add_extra_frontmatter(&mut self, format: FrontmatterFormat, content_start: u32, content_end: u32) -> u32 {
+    fn add_extra_frontmatter(
+        &mut self,
+        format: FrontmatterFormat,
+        content_start: u32,
+        content_end: u32,
+    ) -> u32 {
         let start = self.extra_data.len() as u32;
         self.extra_data.push(match format {
             FrontmatterFormat::Yaml => 0,
@@ -181,10 +291,24 @@ impl Parser {
     // === Error handling ===
 
     fn warn(&mut self, tag: ErrorTag) {
+        self.warn_at(tag, self.token_index);
+    }
+
+    fn warn_at(&mut self, tag: ErrorTag, token: TokenIndex) {
+        let byte_offset = self.byte_offset_for_token(token);
         self.errors.push(Error {
             tag,
-            token: self.token_index,
+            token,
+            byte_offset,
         });
+    }
+
+    fn byte_offset_for_token(&self, token: TokenIndex) -> ByteOffset {
+        if (token as usize) < self.token_starts.len() {
+            self.token_starts[token as usize]
+        } else {
+            self.source.len() as ByteOffset
+        }
     }
 
     fn find_next_block(&mut self) {
@@ -269,7 +393,8 @@ impl Parser {
         }
         self.next_token(); // consume hr
 
-        let extra_index = self.add_extra_frontmatter(FrontmatterFormat::Yaml, content_start, content_end);
+        let extra_index =
+            self.add_extra_frontmatter(FrontmatterFormat::Yaml, content_start, content_end);
 
         Ok(self.add_node(Node {
             tag: NodeTag::Frontmatter,
@@ -313,7 +438,8 @@ impl Parser {
         }
         self.next_token(); // consume CodeFenceEnd
 
-        let extra_index = self.add_extra_frontmatter(FrontmatterFormat::Json, content_start, content_end);
+        let extra_index =
+            self.add_extra_frontmatter(FrontmatterFormat::Json, content_start, content_end);
 
         Ok(self.add_node(Node {
             tag: NodeTag::Frontmatter,
@@ -434,7 +560,7 @@ impl Parser {
 
     fn parse_inline(&mut self) -> PResult<NodeIndex> {
         match self.current_tag() {
-            TokenTag::Text => self.parse_text(),
+            TokenTag::Text | TokenTag::Indent | TokenTag::Space => self.parse_text(),
             TokenTag::StrongStart => self.parse_strong(),
             TokenTag::EmphasisStart => self.parse_emphasis(),
             TokenTag::CodeInlineStart => self.parse_code_inline(),
@@ -599,9 +725,7 @@ impl Parser {
         self.eat_token(TokenTag::Newline);
 
         // Consume until closing ```
-        while self.current_tag() != TokenTag::CodeFenceEnd
-            && self.current_tag() != TokenTag::Eof
-        {
+        while self.current_tag() != TokenTag::CodeFenceEnd && self.current_tag() != TokenTag::Eof {
             self.token_index += 1;
         }
 
@@ -708,27 +832,47 @@ impl Parser {
         let item_token = self.next_token();
         let node_index = self.reserve_node(NodeTag::ListItem);
 
+        // Check for checkbox token
+        let checked = if self.eat_token(TokenTag::CheckboxUnchecked).is_some() {
+            Some(false)
+        } else if self.eat_token(TokenTag::CheckboxChecked).is_some() {
+            Some(true)
+        } else {
+            None
+        };
+
         let children_span = match self.parse_inline_content(TokenTag::Newline) {
             Ok(span) => span,
             Err(e) => {
+                let extra_idx = self.add_extra_list_item(&ListItemData {
+                    checked,
+                    children_start: 0,
+                    children_end: 0,
+                });
                 self.set_node(
                     node_index,
                     Node {
                         tag: NodeTag::ListItem,
                         main_token: item_token,
-                        data: NodeData::Children(Range { start: 0, end: 0 }),
+                        data: NodeData::Extra(extra_idx),
                     },
                 );
                 return Err(e);
             }
         };
 
+        let extra_idx = self.add_extra_list_item(&ListItemData {
+            checked,
+            children_start: children_span.start,
+            children_end: children_span.end,
+        });
+
         Ok(self.set_node(
             node_index,
             Node {
                 tag: NodeTag::ListItem,
                 main_token: item_token,
-                data: NodeData::Children(children_span),
+                data: NodeData::Extra(extra_idx),
             },
         ))
     }
@@ -748,6 +892,11 @@ impl Parser {
             if depth > 0 {
                 self.token_index += 1;
             }
+        }
+
+        if depth > 0 {
+            self.warn(ErrorTag::UnclosedExpression);
+            return Err(ParseError::ParseError);
         }
 
         let content_end = self.token_index;
@@ -780,41 +929,32 @@ impl Parser {
         }
 
         let name = self.expect_token(TokenTag::JsxIdentifier)?;
+        let open_name = self.token_slice(name).trim().to_string();
 
         // Parse attributes
         let attrs_start = self.extra_data.len() as u32;
         while self.current_tag() == TokenTag::JsxIdentifier {
             let attr_name = self.next_token();
 
-            let mut attr_value: Option<TokenIndex> = None;
-            let mut attr_type: JsxAttributeType = JsxAttributeType::Literal;
-
-            if self.eat_token(TokenTag::JsxEqual).is_some() {
-                if let Some(val) = self.eat_token(TokenTag::JsxString) {
-                    attr_value = Some(val);
-                    attr_type = JsxAttributeType::Literal;
-                } else if self.eat_token(TokenTag::JsxAttrExprStart).is_some() {
-                    let expr_content_start = self.token_index;
-                    while self.current_tag() != TokenTag::ExprEnd
-                        && self.current_tag() != TokenTag::Eof
-                    {
-                        self.token_index += 1;
-                    }
-                    self.expect_token(TokenTag::ExprEnd)?;
-                    attr_value = Some(expr_content_start);
-                    attr_type = JsxAttributeType::Expression;
-                }
-            }
+            let (attr_value, attr_type) = if self.eat_token(TokenTag::JsxEqual).is_some() {
+                self.parse_jsx_attribute_value()?
+            } else {
+                (None, JsxAttributeType::Boolean)
+            };
 
             self.extra_data.push(attr_name);
-            self.extra_data
-                .push(attr_value.unwrap_or(u32::MAX));
-            self.extra_data.push(match attr_type {
-                JsxAttributeType::Literal => 0,
-                JsxAttributeType::Expression => 1,
-            });
+            self.extra_data.push(attr_value.unwrap_or(u32::MAX));
+            self.extra_data.push(Self::jsx_attr_type_to_raw(attr_type));
         }
         let attrs_end = self.extra_data.len() as u32;
+
+        if !matches!(
+            self.current_tag(),
+            TokenTag::JsxSelfClose | TokenTag::JsxTagEnd
+        ) {
+            self.warn(ErrorTag::InvalidJsxAttribute);
+            return Err(ParseError::ParseError);
+        }
 
         // Check for self-closing
         if self.eat_token(TokenTag::JsxSelfClose).is_some() {
@@ -854,6 +994,26 @@ impl Parser {
                     self.scratch.push(child);
                 }
                 TokenTag::Text => {
+                    let child = self.parse_text()?;
+                    self.scratch.push(child);
+                }
+                TokenTag::Indent => {
+                    let next_tag = self.peek_token(1);
+                    if matches!(
+                        next_tag,
+                        TokenTag::JsxTagStart
+                            | TokenTag::JsxCloseTag
+                            | TokenTag::Newline
+                            | TokenTag::BlankLine
+                            | TokenTag::Eof
+                    ) {
+                        self.token_index += 1;
+                    } else {
+                        let child = self.parse_text()?;
+                        self.scratch.push(child);
+                    }
+                }
+                TokenTag::Space => {
                     let child = self.parse_text()?;
                     self.scratch.push(child);
                 }
@@ -899,8 +1059,13 @@ impl Parser {
         let children_span = self.list_to_span(&children_vec);
 
         // Expect closing tag
-        self.expect_token(TokenTag::JsxCloseTag)?;
-        self.expect_token(TokenTag::JsxIdentifier)?;
+        let close_tag_token = self.expect_token(TokenTag::JsxCloseTag)?;
+        let close_name = self.expect_token(TokenTag::JsxIdentifier)?;
+        if self.token_slice(close_name).trim() != open_name {
+            self.warn_at(ErrorTag::MismatchedTags, close_tag_token);
+            self.eat_token(TokenTag::JsxTagEnd);
+            return Err(ParseError::ParseError);
+        }
         self.expect_token(TokenTag::JsxTagEnd)?;
 
         let jsx_data = self.add_extra_jsx_element(&JsxElement {
@@ -918,7 +1083,78 @@ impl Parser {
         }))
     }
 
+    fn parse_jsx_attribute_value(&mut self) -> PResult<(Option<TokenIndex>, JsxAttributeType)> {
+        if let Some(value_token) = self.eat_token(TokenTag::JsxString) {
+            return Ok((Some(value_token), JsxAttributeType::String));
+        }
+
+        if self.eat_token(TokenTag::JsxAttrExprStart).is_some() {
+            let expr_content_start = self.token_index;
+            let mut depth: u32 = 1;
+
+            while depth > 0 && self.current_tag() != TokenTag::Eof {
+                match self.current_tag() {
+                    TokenTag::ExprStart => depth += 1,
+                    TokenTag::ExprEnd => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    self.token_index += 1;
+                }
+            }
+
+            if depth > 0 {
+                self.warn(ErrorTag::UnclosedExpression);
+                return Err(ParseError::ParseError);
+            }
+
+            self.expect_token(TokenTag::ExprEnd)?;
+            let value_token = if expr_content_start == self.token_index.saturating_sub(1) {
+                None
+            } else {
+                Some(expr_content_start)
+            };
+            return Ok((value_token, JsxAttributeType::Expression));
+        }
+
+        if let Some(value_token) = self.eat_token(TokenTag::JsxIdentifier) {
+            let value = self.token_slice(value_token).trim();
+            let value_type = Self::infer_unquoted_jsx_value_type(value);
+            return Ok((Some(value_token), value_type));
+        }
+
+        if let Some(value_token) = self.eat_token(TokenTag::Text) {
+            let value = self.token_slice(value_token).trim();
+            let value_type = Self::infer_unquoted_jsx_value_type(value);
+            return Ok((Some(value_token), value_type));
+        }
+
+        self.warn(ErrorTag::InvalidJsxAttribute);
+        Err(ParseError::ParseError)
+    }
+
+    fn infer_unquoted_jsx_value_type(value: &str) -> JsxAttributeType {
+        if value == "true" || value == "false" {
+            JsxAttributeType::Boolean
+        } else if value.parse::<f64>().is_ok() {
+            JsxAttributeType::Number
+        } else {
+            JsxAttributeType::String
+        }
+    }
+
+    fn jsx_attr_type_to_raw(value_type: JsxAttributeType) -> u32 {
+        match value_type {
+            JsxAttributeType::String => 0,
+            JsxAttributeType::Number => 1,
+            JsxAttributeType::Boolean => 2,
+            JsxAttributeType::Expression => 3,
+        }
+    }
+
     fn parse_jsx_closing_tag(&mut self) -> PResult<NodeIndex> {
+        let close_tag_token = self.token_index.saturating_sub(1);
+        self.warn_at(ErrorTag::UnexpectedToken, close_tag_token);
         self.expect_token(TokenTag::JsxIdentifier)?;
         self.expect_token(TokenTag::JsxTagEnd)?;
         Err(ParseError::ParseError) // Closing tags shouldn't appear at block level
@@ -1009,7 +1245,11 @@ mod tests {
         let source = "```hnmd\n{\"title\": \"Hello\"}\n```\n\n# Content\n";
         let ast = parse(source);
 
-        assert!(ast.errors.is_empty(), "Expected no errors, got: {:?}", ast.errors);
+        assert!(
+            ast.errors.is_empty(),
+            "Expected no errors, got: {:?}",
+            ast.errors
+        );
 
         let fm_idx = ast
             .nodes

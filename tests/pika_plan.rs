@@ -1,5 +1,4 @@
 /// Tests based on the examples in HYPERNOTE_IN_PIKA_PLAN.md
-
 use hypernote_mdx::ast::NodeTag;
 
 #[test]
@@ -23,7 +22,12 @@ fn invoice_example() {
     let json = hypernote_mdx::serialize_tree(&ast);
 
     // Should parse without errors
-    assert_eq!(0, ast.errors.len(), "errors: {:?}", ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>());
+    assert_eq!(
+        0,
+        ast.errors.len(),
+        "errors: {:?}",
+        ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>()
+    );
 
     // Verify JSON is valid
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -31,7 +35,10 @@ fn invoice_example() {
     let children = root["children"].as_array().unwrap();
 
     // Should have: heading, paragraph, Card element, HStack element
-    let types: Vec<&str> = children.iter().map(|c| c["type"].as_str().unwrap()).collect();
+    let types: Vec<&str> = children
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
     assert!(types.contains(&"heading"), "types: {:?}", types);
     assert!(types.contains(&"paragraph"), "types: {:?}", types);
     assert!(types.contains(&"mdx_jsx_element"), "types: {:?}", types);
@@ -49,12 +56,19 @@ fn chat_action_example() {
 
     let ast = hypernote_mdx::parse(source);
 
-    assert_eq!(0, ast.errors.len(), "errors: {:?}", ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>());
+    assert_eq!(
+        0,
+        ast.errors.len(),
+        "errors: {:?}",
+        ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>()
+    );
 
     // Find the HStack element
     let hstack = ast.nodes.iter().enumerate().find(|(_, n)| {
         if n.tag == NodeTag::MdxJsxElement {
-            let elem = ast.jsx_element(*&(ast.nodes.iter().position(|x| std::ptr::eq(x, *n)).unwrap() as u32));
+            let elem = ast.jsx_element(
+                *&(ast.nodes.iter().position(|x| std::ptr::eq(x, *n)).unwrap() as u32),
+            );
             let name = ast.token_slice(elem.name_token).trim();
             name == "HStack"
         } else {
@@ -64,16 +78,20 @@ fn chat_action_example() {
     assert!(hstack.is_some(), "HStack not found");
 
     // Count SubmitButton children
-    let submit_count = ast.nodes.iter().filter(|n| {
-        if n.tag == NodeTag::MdxJsxElement {
-            let idx = ast.nodes.iter().position(|x| std::ptr::eq(x, *n)).unwrap() as u32;
-            let elem = ast.jsx_element(idx);
-            let name = ast.token_slice(elem.name_token).trim();
-            name == "SubmitButton"
-        } else {
-            false
-        }
-    }).count();
+    let submit_count = ast
+        .nodes
+        .iter()
+        .filter(|n| {
+            if n.tag == NodeTag::MdxJsxElement {
+                let idx = ast.nodes.iter().position(|x| std::ptr::eq(x, *n)).unwrap() as u32;
+                let elem = ast.jsx_element(idx);
+                let name = ast.token_slice(elem.name_token).trim();
+                name == "SubmitButton"
+            } else {
+                false
+            }
+        })
+        .count();
     assert_eq!(3, submit_count, "Expected 3 SubmitButtons");
 }
 
@@ -90,17 +108,38 @@ fn signed_action_example() {
     let ast = hypernote_mdx::parse(source);
     let json = hypernote_mdx::serialize_tree(&ast);
 
-    assert_eq!(0, ast.errors.len(), "errors: {:?}", ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>());
+    assert_eq!(
+        0,
+        ast.errors.len(),
+        "errors: {:?}",
+        ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>()
+    );
 
     // Verify TextInput is self-closing with correct attributes
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     let json_str = serde_json::to_string_pretty(&parsed).unwrap();
 
-    assert!(json_str.contains("TextInput"), "Missing TextInput: {}", json_str);
-    assert!(json_str.contains("SubmitButton"), "Missing SubmitButton: {}", json_str);
+    assert!(
+        json_str.contains("TextInput"),
+        "Missing TextInput: {}",
+        json_str
+    );
+    assert!(
+        json_str.contains("SubmitButton"),
+        "Missing SubmitButton: {}",
+        json_str
+    );
     // TextInput should have name="message" (attr name is "name", attr value is "message")
-    assert!(json_str.contains("\"value\": \"message\""), "Missing name=message attr: {}", json_str);
-    assert!(json_str.contains("\"value\": \"What's on your mind?\""), "Missing placeholder attr: {}", json_str);
+    assert!(
+        json_str.contains("\"value\": \"message\""),
+        "Missing name=message attr: {}",
+        json_str
+    );
+    assert!(
+        json_str.contains("\"value\": \"What's on your mind?\""),
+        "Missing placeholder attr: {}",
+        json_str
+    );
 }
 
 #[test]
@@ -109,15 +148,28 @@ fn expression_in_jsx_attr() {
 
     let ast = hypernote_mdx::parse(source);
 
-    assert_eq!(0, ast.errors.len(), "errors: {:?}", ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>());
+    assert_eq!(
+        0,
+        ast.errors.len(),
+        "errors: {:?}",
+        ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>()
+    );
 
     // Verify the expression attribute is parsed
     let json = hypernote_mdx::serialize_tree(&ast);
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     let json_str = serde_json::to_string_pretty(&parsed).unwrap();
 
-    assert!(json_str.contains("\"type\": \"expression\""), "Missing expression attr type: {}", json_str);
-    assert!(json_str.contains("queries.feed"), "Missing expression value: {}", json_str);
+    assert!(
+        json_str.contains("\"type\": \"expression\""),
+        "Missing expression attr type: {}",
+        json_str
+    );
+    assert!(
+        json_str.contains("queries.feed"),
+        "Missing expression value: {}",
+        json_str
+    );
 }
 
 #[test]
@@ -149,7 +201,12 @@ fn nested_layout_components() {
 
     let ast = hypernote_mdx::parse(source);
 
-    assert_eq!(0, ast.errors.len(), "errors: {:?}", ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>());
+    assert_eq!(
+        0,
+        ast.errors.len(),
+        "errors: {:?}",
+        ast.errors.iter().map(|e| e.tag.name()).collect::<Vec<_>>()
+    );
 
     // Verify nesting: Card > VStack, Card > HStack
     let json = hypernote_mdx::serialize_tree(&ast);

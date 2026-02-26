@@ -24,7 +24,13 @@ fn main() {
     if !ast.errors.is_empty() {
         println!("\n=== ERRORS ({}) ===", ast.errors.len());
         for err in &ast.errors {
-            println!("  - {} at token {}", err.tag.name(), err.token);
+            println!(
+                "  - {} at token {} (byte {}): {}",
+                err.tag.name(),
+                err.token,
+                err.byte_offset,
+                err.tag.message()
+            );
         }
     }
 }

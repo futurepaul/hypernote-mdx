@@ -8,6 +8,14 @@ A Rust parser for MDX (Markdown + JSX), built for the [hypernote](https://github
 // Parse MDX source into AST
 let ast = hypernote_mdx::parse(source);
 
+// Optional parser behavior (for example, emoji shortcode normalization)
+let ast = hypernote_mdx::parse_with_options(
+  source,
+  &hypernote_mdx::ParseOptions {
+    normalize_emoji_shortcodes: true,
+  },
+);
+
 // Serialize AST to JSON (for crossing FFI boundaries)
 let json = hypernote_mdx::serialize_tree(&ast);
 

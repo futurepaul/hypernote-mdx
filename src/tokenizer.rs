@@ -1,4 +1,4 @@
-use crate::token::{Tag, Token, Loc};
+use crate::token::{Loc, Tag, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -19,6 +19,7 @@ pub struct Tokenizer<'a> {
     emphasis_depth: u32,
     after_link_text: bool,
     in_link_url: bool,
+    pending_token: Option<Token>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -33,16 +34,56 @@ impl<'a> Tokenizer<'a> {
             emphasis_depth: 0,
             after_link_text: false,
             in_link_url: false,
+            pending_token: None,
         }
     }
 
     pub fn next(&mut self) -> Token {
+        if let Some(tok) = self.pending_token.take() {
+            return tok;
+        }
         match self.mode {
             Mode::Markdown => self.next_markdown(),
             Mode::Jsx => self.next_jsx(),
             Mode::Expression => self.next_expression(),
             Mode::InlineCode => self.next_inline_code(),
             Mode::CodeBlock => self.next_code_block(),
+        }
+    }
+
+    /// Check if current position starts a checkbox pattern: `[ ] `, `[x] `, `[X] `
+    /// Also matches at end of line: `[ ]\n`, `[x]\n`, `[X]\n`, or at EOF.
+    /// If matched, sets `pending_token` and advances `self.index`.
+    fn try_checkbox(&mut self) {
+        if self.buf(self.index) == b'['
+            && (self.buf(self.index + 1) == b' '
+                || self.buf(self.index + 1) == b'x'
+                || self.buf(self.index + 1) == b'X')
+            && self.buf(self.index + 2) == b']'
+        {
+            let after_bracket = self.index + 3;
+            let next_char = self.buf(after_bracket);
+            if next_char == b' ' || next_char == b'\n' || next_char == 0 {
+                let checked = self.buf(self.index + 1) != b' ';
+                let cb_start = self.index;
+                let cb_end = if next_char == b' ' {
+                    after_bracket + 1
+                } else {
+                    after_bracket
+                };
+                self.pending_token = Some(Token {
+                    tag: if checked {
+                        Tag::CheckboxChecked
+                    } else {
+                        Tag::CheckboxUnchecked
+                    },
+                    loc: Loc {
+                        start: cb_start,
+                        end: cb_end,
+                    },
+                });
+                self.index = cb_end;
+            }
         }
     }
 
@@ -73,6 +114,9 @@ impl<'a> Tokenizer<'a> {
                 self.make_token(Tag::BlankLine, start)
             }
             b'#' => {
+                if self.is_keycap_emoji_start(start) {
+                    return self.next_markdown_inline(start);
+                }
                 self.index += 1;
                 // Count consecutive # characters
                 while self.buf(self.index) == b'#' {
@@ -85,6 +129,9 @@ impl<'a> Tokenizer<'a> {
                 self.make_token(Tag::HeadingStart, start)
             }
             b'-' | b'*' | b'_' => {
+                if c == b'*' && self.is_keycap_emoji_start(start) {
+                    return self.next_markdown_inline(start);
+                }
                 self.index += 1;
                 self.hr_or_frontmatter(start, c)
             }
@@ -99,6 +146,10 @@ impl<'a> Tokenizer<'a> {
             }
             b'>' => {
                 self.index += 1;
+                // Skip optional space after >
+                if self.buf(self.index) == b' ' {
+                    self.index += 1;
+                }
                 self.make_token(Tag::BlockquoteStart, start)
             }
             b' ' | b'\t' => {
@@ -109,6 +160,9 @@ impl<'a> Tokenizer<'a> {
                 self.make_token(Tag::Indent, indent_start)
             }
             b'0'..=b'9' => {
+                if self.is_keycap_emoji_start(start) {
+                    return self.next_markdown_inline(start);
+                }
                 // Check for ordered list (e.g., "1. ")
                 let mut temp_index = self.index;
                 while (temp_index as usize) < self.buffer.len()
@@ -123,6 +177,7 @@ impl<'a> Tokenizer<'a> {
                     && self.buf(temp_index + 1) == b' '
                 {
                     self.index = temp_index + 2;
+                    self.try_checkbox();
                     self.make_token(Tag::ListItemOrdered, start)
                 } else {
                     self.next_markdown_inline(start)
@@ -159,6 +214,8 @@ impl<'a> Tokenizer<'a> {
         // Check for list item
         if first_char == b'-' || first_char == b'*' {
             if self.buf(self.index) == b' ' {
+                self.index += 1; // advance past the space
+                self.try_checkbox();
                 return self.make_token(Tag::ListItemUnordered, start);
             }
         }
@@ -184,8 +241,7 @@ impl<'a> Tokenizer<'a> {
                 self.make_token(Tag::Newline, start)
             }
             b'\\' => {
-                if self.index as usize + 1 < self.buffer.len()
-                    && self.buf(self.index + 1) == b'\n'
+                if self.index as usize + 1 < self.buffer.len() && self.buf(self.index + 1) == b'\n'
                 {
                     self.index += 2;
                     self.line_start = self.index;
@@ -226,6 +282,9 @@ impl<'a> Tokenizer<'a> {
                 }
             }
             b'*' => {
+                if self.is_keycap_emoji_start(start) {
+                    return self.text(start);
+                }
                 self.index += 1;
                 self.maybe_strong_or_emphasis(start)
             }
@@ -269,9 +328,7 @@ impl<'a> Tokenizer<'a> {
                 }
             }
             b'!' => {
-                if self.index as usize + 1 < self.buffer.len()
-                    && self.buf(self.index + 1) == b'['
-                {
+                if self.index as usize + 1 < self.buffer.len() && self.buf(self.index + 1) == b'[' {
                     self.index += 2;
                     self.make_token(Tag::ImageStart, start)
                 } else {
@@ -306,7 +363,14 @@ impl<'a> Tokenizer<'a> {
         while (self.index as usize) < self.buffer.len() {
             let ch = self.buf(self.index);
             match ch {
-                0 | b'\n' | b'{' | b'<' | b'*' | b'`' | b'[' => break,
+                0 | b'\n' | b'{' | b'<' | b'`' | b'[' => break,
+                b'*' => {
+                    if self.is_keycap_emoji_start(self.index) {
+                        self.advance_keycap_emoji();
+                    } else {
+                        break;
+                    }
+                }
                 b']' => {
                     if self.index as usize + 1 < self.buffer.len()
                         && self.buf(self.index + 1) == b'('
@@ -437,6 +501,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 self.next()
             }
+            b'0'..=b'9' | b'-' => self.next_jsx_bare_value(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.next_jsx_identifier(),
             _ => {
                 self.index += 1;
@@ -454,6 +519,17 @@ impl<'a> Tokenizer<'a> {
             }
         }
         self.make_token(Tag::JsxIdentifier, start)
+    }
+
+    fn next_jsx_bare_value(&mut self) -> Token {
+        let start = self.index;
+        while (self.index as usize) < self.buffer.len() {
+            match self.buf(self.index) {
+                b' ' | b'\t' | b'\n' | b'/' | b'>' | b'=' | 0 => break,
+                _ => self.index += 1,
+            }
+        }
+        self.make_token(Tag::Text, start)
     }
 
     fn next_jsx_string(&mut self, quote: u8) -> Token {
@@ -578,6 +654,33 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    fn is_keycap_emoji_start(&self, idx: u32) -> bool {
+        let base = self.buf(idx);
+        if !matches!(base, b'0'..=b'9' | b'#' | b'*') {
+            return false;
+        }
+
+        // keycap sequence: [#*0-9] + optional U+FE0F + U+20E3
+        if self.buf(idx + 1) == 0xEF && self.buf(idx + 2) == 0xB8 && self.buf(idx + 3) == 0x8F {
+            return self.buf(idx + 4) == 0xE2
+                && self.buf(idx + 5) == 0x83
+                && self.buf(idx + 6) == 0xA3;
+        }
+
+        self.buf(idx + 1) == 0xE2 && self.buf(idx + 2) == 0x83 && self.buf(idx + 3) == 0xA3
+    }
+
+    fn advance_keycap_emoji(&mut self) {
+        if self.buf(self.index + 1) == 0xEF
+            && self.buf(self.index + 2) == 0xB8
+            && self.buf(self.index + 3) == 0x8F
+        {
+            self.index += 7;
+        } else {
+            self.index += 4;
+        }
+    }
+
     fn is_jsx_start(&self) -> bool {
         if self.index as usize + 1 >= self.buffer.len() {
             return false;
@@ -642,7 +745,10 @@ mod tests {
 
         let tok2 = tokenizer.next();
         assert_eq!(Tag::Text, tok2.tag);
-        assert_eq!("Hello World", &source[tok2.loc.start as usize..tok2.loc.end as usize]);
+        assert_eq!(
+            "Hello World",
+            &source[tok2.loc.start as usize..tok2.loc.end as usize]
+        );
 
         let tok3 = tokenizer.next();
         assert_eq!(Tag::Newline, tok3.tag);
@@ -693,5 +799,46 @@ mod tests {
 
         let tok1 = tokenizer.next();
         assert_eq!(Tag::FrontmatterStart, tok1.tag);
+    }
+
+    #[test]
+    fn keycap_emoji_not_tokenized_as_markdown_syntax() {
+        let source = "#️⃣ heading keycap\n*️⃣ star keycap\n";
+        let mut tokenizer = Tokenizer::new(source);
+
+        let tok1 = tokenizer.next();
+        assert_eq!(Tag::Text, tok1.tag);
+        assert_eq!(
+            "#️⃣ heading keycap",
+            &source[tok1.loc.start as usize..tok1.loc.end as usize]
+        );
+
+        let tok2 = tokenizer.next();
+        assert_eq!(Tag::Newline, tok2.tag);
+
+        let tok3 = tokenizer.next();
+        assert_eq!(Tag::Text, tok3.tag);
+        assert_eq!(
+            "*️⃣ star keycap",
+            &source[tok3.loc.start as usize..tok3.loc.end as usize]
+        );
+    }
+
+    #[test]
+    fn tokenize_jsx_numeric_bare_attribute_value() {
+        let source = "<Box count=4 />";
+        let mut tokenizer = Tokenizer::new(source);
+
+        assert_eq!(Tag::JsxTagStart, tokenizer.next().tag);
+        assert_eq!(Tag::JsxIdentifier, tokenizer.next().tag);
+        assert_eq!(Tag::JsxIdentifier, tokenizer.next().tag);
+        assert_eq!(Tag::JsxEqual, tokenizer.next().tag);
+        let value = tokenizer.next();
+        assert_eq!(Tag::Text, value.tag);
+        assert_eq!(
+            "4",
+            &source[value.loc.start as usize..value.loc.end as usize]
+        );
+        assert_eq!(Tag::JsxSelfClose, tokenizer.next().tag);
     }
 }

@@ -17,12 +17,16 @@ fn parse_and_check(name: &str, source: &str) {
     assert!(!rendered.is_empty(), "{}: rendered output is empty", name);
 
     // JSON must be valid
-    let parsed: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or_else(|e| panic!("{}: invalid JSON: {}", name, e));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("{}: invalid JSON: {}", name, e));
 
     let root = parsed.as_object().unwrap();
     assert!(root.contains_key("type"), "{}: missing 'type'", name);
-    assert!(root.contains_key("children"), "{}: missing 'children'", name);
+    assert!(
+        root.contains_key("children"),
+        "{}: missing 'children'",
+        name
+    );
     assert!(root.contains_key("source"), "{}: missing 'source'", name);
     assert!(root.contains_key("errors"), "{}: missing 'errors'", name);
 

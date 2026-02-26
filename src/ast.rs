@@ -3,6 +3,8 @@ use crate::token::Tag as TokenTag;
 pub type TokenIndex = u32;
 pub type NodeIndex = u32;
 pub type ByteOffset = u32;
+pub const AST_SCHEMA_NAME: &str = "hypernote-mdx-ast";
+pub const AST_SCHEMA_VERSION: u32 = 1;
 
 /// Abstract Syntax Tree for MDX documents.
 pub struct Ast {
@@ -113,6 +115,7 @@ pub struct Range {
 pub struct Error {
     pub tag: ErrorTag,
     pub token: TokenIndex,
+    pub byte_offset: ByteOffset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +145,20 @@ impl ErrorTag {
             ErrorTag::UnexpectedToken => "unexpected_token",
         }
     }
+
+    pub fn message(&self) -> &'static str {
+        match self {
+            ErrorTag::ExpectedToken => "Expected a specific token but found a different one.",
+            ErrorTag::ExpectedBlockElement => "Expected a valid block-level element.",
+            ErrorTag::ExpectedClosingTag => "Expected a closing JSX tag.",
+            ErrorTag::UnclosedExpression => "Expression is missing a closing brace.",
+            ErrorTag::UnclosedFrontmatter => "Frontmatter block is missing a closing delimiter.",
+            ErrorTag::InvalidJsxAttribute => "Invalid JSX attribute syntax.",
+            ErrorTag::BlankLineRequired => "A blank line is required before this construct.",
+            ErrorTag::MismatchedTags => "JSX closing tag does not match opening tag.",
+            ErrorTag::UnexpectedToken => "Unexpected token in current parsing context.",
+        }
+    }
 }
 
 // Extra data structures for complex nodes
@@ -161,7 +178,9 @@ pub struct FrontmatterData {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsxAttributeType {
-    Literal,
+    String,
+    Number,
+    Boolean,
     Expression,
 }
 
@@ -195,6 +214,13 @@ pub struct Link {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct ListItemData {
+    pub checked: Option<bool>,
+    pub children_start: u32,
+    pub children_end: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Span {
     pub start: ByteOffset,
     pub end: ByteOffset,
@@ -210,7 +236,6 @@ impl Ast {
             | NodeTag::Blockquote
             | NodeTag::ListUnordered
             | NodeTag::ListOrdered
-            | NodeTag::ListItem
             | NodeTag::Strong
             | NodeTag::Emphasis
             | NodeTag::MdxJsxFragment => {
@@ -226,6 +251,14 @@ impl Ast {
             }
             NodeTag::Heading => {
                 let info = self.heading_info(node_idx);
+                let slice =
+                    &self.extra_data[info.children_start as usize..info.children_end as usize];
+                unsafe {
+                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
+                }
+            }
+            NodeTag::ListItem => {
+                let info = self.list_item_info(node_idx);
                 let slice =
                     &self.extra_data[info.children_start as usize..info.children_end as usize];
                 unsafe {
@@ -294,12 +327,31 @@ impl Ast {
         }
     }
 
+    /// Extract extra data as ListItemData
+    pub fn list_item_info(&self, node_index: NodeIndex) -> ListItemData {
+        let node = &self.nodes[node_index as usize];
+        debug_assert!(node.tag == NodeTag::ListItem);
+        let idx = match node.data {
+            NodeData::Extra(i) => i as usize,
+            _ => panic!("list item node has wrong data type"),
+        };
+        let checked_raw = self.extra_data[idx];
+        let checked = match checked_raw {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        };
+        ListItemData {
+            checked,
+            children_start: self.extra_data[idx + 1],
+            children_end: self.extra_data[idx + 2],
+        }
+    }
+
     /// Get JSX element details
     pub fn jsx_element(&self, node_index: NodeIndex) -> JsxElement {
         let node = &self.nodes[node_index as usize];
-        debug_assert!(
-            node.tag == NodeTag::MdxJsxElement || node.tag == NodeTag::MdxJsxSelfClosing
-        );
+        debug_assert!(node.tag == NodeTag::MdxJsxElement || node.tag == NodeTag::MdxJsxSelfClosing);
         let idx = match node.data {
             NodeData::Extra(i) => i as usize,
             _ => panic!("jsx element node has wrong data type"),
@@ -334,7 +386,11 @@ impl Ast {
             };
 
             let value_type = if type_raw == 0 {
-                JsxAttributeType::Literal
+                JsxAttributeType::String
+            } else if type_raw == 1 {
+                JsxAttributeType::Number
+            } else if type_raw == 2 {
+                JsxAttributeType::Boolean
             } else {
                 JsxAttributeType::Expression
             };
