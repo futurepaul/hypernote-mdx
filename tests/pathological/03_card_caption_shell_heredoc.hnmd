@@ -1,0 +1,7 @@
+<Card>
+<Caption>cat > "$HOME/.config/systemd/user/orange-wallet.service" <<EOF
+[Unit]
+Description=Orange Wallet
+EOF
+</Caption>
+</Card>

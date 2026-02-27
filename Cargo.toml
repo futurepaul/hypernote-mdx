@@ -1,6 +1,6 @@
 [package]
 name = "hypernote-mdx"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -13,3 +13,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "mdx-parse"
 path = "src/main.rs"
+
+[[bin]]
+name = "mdx-view"
+path = "src/mdx_view.rs"

@@ -63,6 +63,16 @@ fn print_ast(ast: &hypernote_mdx::ast::Ast) {
                 };
                 print!(" \"{}\"", trimmed);
             }
+            NodeTag::Table => {
+                let info = ast.table_info(node_idx);
+                let children = ast.children(node_idx);
+                print!(
+                    " (columns={}, rows={}, children={})",
+                    info.num_columns,
+                    info.num_rows,
+                    children.len()
+                );
+            }
             NodeTag::Document
             | NodeTag::Paragraph
             | NodeTag::Blockquote
@@ -70,7 +80,9 @@ fn print_ast(ast: &hypernote_mdx::ast::Ast) {
             | NodeTag::ListOrdered
             | NodeTag::ListItem
             | NodeTag::MdxJsxElement
-            | NodeTag::MdxJsxFragment => {
+            | NodeTag::MdxJsxFragment
+            | NodeTag::TableRow
+            | NodeTag::TableCell => {
                 let children = ast.children(node_idx);
                 if !children.is_empty() {
                     print!(" (children={})", children.len());
@@ -120,6 +132,10 @@ fn print_node(
         NodeTag::Text => {
             let token_text = ast.token_slice(node.main_token);
             print!(" \"{}\"", token_text);
+        }
+        NodeTag::Table => {
+            let info = ast.table_info(node_idx);
+            print!(" ({}x{})", info.num_columns, info.num_rows);
         }
         NodeTag::MdxJsxElement | NodeTag::MdxJsxSelfClosing => {
             let elem = ast.jsx_element(node_idx);

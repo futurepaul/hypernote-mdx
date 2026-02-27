@@ -106,6 +106,7 @@ fn is_content_block(tag: NodeTag) -> bool {
             | NodeTag::Blockquote
             | NodeTag::ListUnordered
             | NodeTag::ListOrdered
+            | NodeTag::Table
     )
 }
 
@@ -445,6 +446,41 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
             }
         }
 
+        NodeTag::Table => {
+            let info = ast.table_info(node_idx);
+            let alignments = ast.table_alignments(node_idx);
+            let rows = ast.children(node_idx);
+
+            if !rows.is_empty() {
+                // Render header row
+                render_table_row(ast, rows[0], output, ctx);
+
+                // Render separator row
+                output.push('|');
+                for align in &alignments {
+                    output.push(' ');
+                    match align {
+                        TableAlignment::Left => output.push_str(":---"),
+                        TableAlignment::Center => output.push_str(":---:"),
+                        TableAlignment::Right => output.push_str("---:"),
+                        TableAlignment::None => output.push_str("---"),
+                    }
+                    output.push_str(" |");
+                }
+                output.push('\n');
+
+                // Render body rows
+                for &row_idx in &rows[1..] {
+                    render_table_row(ast, row_idx, output, ctx);
+                }
+            }
+            let _ = info; // suppress unused warning
+        }
+
+        NodeTag::TableRow | NodeTag::TableCell => {
+            // These are handled by render_table_row; if called directly, fall through
+        }
+
         NodeTag::MdxJsxFragment => {
             write_indent(output, ctx.indent_level);
             output.push_str("<>\n");
@@ -470,6 +506,20 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
             output.push_str(source);
         }
     }
+}
+
+fn render_table_row(ast: &Ast, row_idx: NodeIndex, output: &mut String, ctx: &RenderContext) {
+    let cells = ast.children(row_idx);
+    output.push('|');
+    for &cell_idx in cells {
+        output.push(' ');
+        let cell_children = ast.children(cell_idx);
+        for &child_idx in cell_children {
+            render_node(ast, child_idx, output, ctx);
+        }
+        output.push_str(" |");
+    }
+    output.push('\n');
 }
 
 fn render_jsx_attributes(ast: &Ast, node_idx: NodeIndex, output: &mut String) {

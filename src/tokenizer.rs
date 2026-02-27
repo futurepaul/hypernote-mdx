@@ -19,6 +19,7 @@ pub struct Tokenizer<'a> {
     emphasis_depth: u32,
     after_link_text: bool,
     in_link_url: bool,
+    in_table: bool,
     pending_token: Option<Token>,
 }
 
@@ -34,6 +35,7 @@ impl<'a> Tokenizer<'a> {
             emphasis_depth: 0,
             after_link_text: false,
             in_link_url: false,
+            in_table: false,
             pending_token: None,
         }
     }
@@ -107,8 +109,12 @@ impl<'a> Tokenizer<'a> {
         let c = self.buf(self.index);
 
         match c {
-            0 => self.make_token(Tag::Eof, start),
+            0 => {
+                self.in_table = false;
+                self.make_token(Tag::Eof, start)
+            }
             b'\n' => {
+                self.in_table = false;
                 self.index += 1;
                 self.line_start = self.index;
                 self.make_token(Tag::BlankLine, start)
@@ -183,7 +189,116 @@ impl<'a> Tokenizer<'a> {
                     self.next_markdown_inline(start)
                 }
             }
-            _ => self.next_markdown_inline(start),
+            b'|' => {
+                if self.in_table {
+                    self.index += 1;
+                    self.make_token(Tag::Pipe, start)
+                } else if self.is_table_start() {
+                    self.in_table = true;
+                    self.index += 1;
+                    self.make_token(Tag::Pipe, start)
+                } else {
+                    self.next_markdown_inline(start)
+                }
+            }
+            _ => {
+                // If we were in a table and this line doesn't start with |, end table mode
+                if self.in_table {
+                    self.in_table = false;
+                }
+                self.next_markdown_inline(start)
+            }
+        }
+    }
+
+    /// Check if current position starts a GFM table.
+    /// We need at least two lines: a header row and a separator row.
+    /// Both must start with `|`.
+    fn is_table_start(&self) -> bool {
+        // Current line must start with |, which we already know.
+        // Find the next line.
+        let mut i = self.index as usize;
+
+        // Skip to end of current line
+        while i < self.buffer.len() && self.buffer[i] != b'\n' {
+            i += 1;
+        }
+        if i >= self.buffer.len() {
+            return false;
+        }
+        i += 1; // skip the \n
+
+        // Next line must start with |
+        if i >= self.buffer.len() || self.buffer[i] != b'|' {
+            return false;
+        }
+        i += 1; // skip |
+
+        // The separator row cells must match pattern: spaces, optional :, dashes, optional :, spaces
+        // separated by |
+        self.is_separator_line(i)
+    }
+
+    /// Check if position i (just after leading |) is a valid separator line.
+    /// Pattern: cells of `[ ]*:?-+:?[ ]*` separated by `|`, ending with optional `|` and newline/EOF.
+    fn is_separator_line(&self, start: usize) -> bool {
+        let mut i = start;
+        let mut found_cell = false;
+
+        loop {
+            // Skip leading spaces
+            while i < self.buffer.len() && self.buffer[i] == b' ' {
+                i += 1;
+            }
+
+            // Check for newline or EOF (end of separator line)
+            if i >= self.buffer.len() || self.buffer[i] == b'\n' {
+                return found_cell;
+            }
+
+            // Optional leading colon
+            if i < self.buffer.len() && self.buffer[i] == b':' {
+                i += 1;
+            }
+
+            // Must have at least one dash
+            if i >= self.buffer.len() || self.buffer[i] != b'-' {
+                return false;
+            }
+            while i < self.buffer.len() && self.buffer[i] == b'-' {
+                i += 1;
+            }
+
+            // Optional trailing colon
+            if i < self.buffer.len() && self.buffer[i] == b':' {
+                i += 1;
+            }
+
+            // Skip trailing spaces
+            while i < self.buffer.len() && self.buffer[i] == b' ' {
+                i += 1;
+            }
+
+            found_cell = true;
+
+            // Must be followed by | or newline/EOF
+            if i >= self.buffer.len() || self.buffer[i] == b'\n' {
+                return true;
+            }
+            if self.buffer[i] == b'|' {
+                i += 1;
+                // Check if this is trailing pipe (followed by newline/EOF/spaces then newline)
+                let mut j = i;
+                while j < self.buffer.len() && self.buffer[j] == b' ' {
+                    j += 1;
+                }
+                if j >= self.buffer.len() || self.buffer[j] == b'\n' {
+                    return true;
+                }
+                // Otherwise continue to next cell
+            } else {
+                return false;
+            }
         }
     }
 
@@ -278,6 +393,8 @@ impl<'a> Tokenizer<'a> {
                     self.push_mode(Mode::Jsx);
                     self.next_jsx()
                 } else {
+                    // Treat lone '<' as regular text (e.g. shell heredocs like `<<EOF`).
+                    self.index += 1;
                     self.text(start)
                 }
             }
@@ -336,6 +453,10 @@ impl<'a> Tokenizer<'a> {
                     self.text(start)
                 }
             }
+            b'|' if self.in_table => {
+                self.index += 1;
+                self.make_token(Tag::Pipe, start)
+            }
             _ => self.text(start),
         }
     }
@@ -364,6 +485,7 @@ impl<'a> Tokenizer<'a> {
             let ch = self.buf(self.index);
             match ch {
                 0 | b'\n' | b'{' | b'<' | b'`' | b'[' => break,
+                b'|' if self.in_table => break,
                 b'*' => {
                     if self.is_keycap_emoji_start(self.index) {
                         self.advance_keycap_emoji();
@@ -401,6 +523,12 @@ impl<'a> Tokenizer<'a> {
                 }
                 _ => self.index += 1,
             }
+        }
+
+        // Guarantee forward progress for unknown punctuation sequences so tokenization
+        // cannot return a zero-length non-EOF token.
+        if self.index == start && (self.index as usize) < self.buffer.len() {
+            self.index += 1;
         }
 
         // Check if we have a hard break pattern at the end

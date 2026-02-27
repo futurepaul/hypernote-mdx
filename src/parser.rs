@@ -2,6 +2,8 @@ use crate::ast::*;
 use crate::token::{Tag as TokenTag, Token};
 use crate::tokenizer::Tokenizer;
 
+const MAX_PARSE_ERRORS: usize = 4096;
+
 #[derive(Debug, Clone)]
 pub struct ParseOptions {
     pub normalize_emoji_shortcodes: bool,
@@ -295,6 +297,9 @@ impl Parser {
     }
 
     fn warn_at(&mut self, tag: ErrorTag, token: TokenIndex) {
+        if self.errors.len() >= MAX_PARSE_ERRORS {
+            return;
+        }
         let byte_offset = self.byte_offset_for_token(token);
         self.errors.push(Error {
             tag,
@@ -308,19 +313,6 @@ impl Parser {
             self.token_starts[token as usize]
         } else {
             self.source.len() as ByteOffset
-        }
-    }
-
-    fn find_next_block(&mut self) {
-        while (self.token_index as usize) < self.token_tags.len() {
-            match self.token_tags[self.token_index as usize] {
-                TokenTag::Eof
-                | TokenTag::BlankLine
-                | TokenTag::HeadingStart
-                | TokenTag::Hr
-                | TokenTag::FrontmatterStart => return,
-                _ => self.token_index += 1,
-            }
         }
     }
 
@@ -354,13 +346,21 @@ impl Parser {
                 break;
             }
 
+            let before = self.token_index;
             match self.parse_block() {
                 Ok(block) => {
                     self.scratch.push(block);
                 }
                 Err(_) => {
-                    self.find_next_block();
+                    // Stop after the first parse failure; callers can fall back to
+                    // plain-text rendering when `ast.errors` is non-empty.
+                    break;
                 }
+            }
+            // Keep forward-progress guard for pathological inputs.
+            if self.token_index == before {
+                self.warn(ErrorTag::UnexpectedToken);
+                self.token_index += 1;
             }
         }
 
@@ -455,6 +455,7 @@ impl Parser {
             TokenTag::Hr => self.parse_hr(),
             TokenTag::BlockquoteStart => self.parse_blockquote(),
             TokenTag::ListItemUnordered | TokenTag::ListItemOrdered => self.parse_list(),
+            TokenTag::Pipe => self.parse_table(),
             TokenTag::JsxTagStart => self.parse_jsx_element(),
             _ => self.parse_paragraph(),
         }
@@ -547,8 +548,12 @@ impl Parser {
                 continue;
             }
 
+            let before = self.token_index;
             let inline_node = self.parse_inline()?;
             self.scratch.push(inline_node);
+            if self.token_index == before {
+                self.token_index += 1;
+            }
         }
 
         self.eat_token(end_tag);
@@ -877,6 +882,221 @@ impl Parser {
         ))
     }
 
+    fn parse_table(&mut self) -> PResult<NodeIndex> {
+        let start_token = self.token_index;
+        let node_index = self.reserve_node(NodeTag::Table);
+
+        let scratch_top = self.scratch.len();
+
+        // Parse header row
+        let header_row = self.parse_table_row()?;
+        self.scratch.push(header_row);
+
+        // Count columns from header row
+        let header_children = match self.nodes[header_row as usize].data {
+            NodeData::Children(range) => range,
+            _ => Range { start: 0, end: 0 },
+        };
+        let num_columns = (header_children.end - header_children.start) as u32;
+
+        // Parse separator row and extract alignments
+        let mut alignments: Vec<TableAlignment> = Vec::new();
+        if self.current_tag() == TokenTag::Pipe {
+            self.next_token(); // consume leading |
+            while self.current_tag() != TokenTag::Newline
+                && self.current_tag() != TokenTag::Eof
+                && self.current_tag() != TokenTag::BlankLine
+            {
+                let before = self.token_index;
+                // Read cell content (should be dashes, colons, spaces)
+                let mut has_left_colon = false;
+                let mut has_right_colon = false;
+                let mut has_dash = false;
+
+                if self.current_tag() == TokenTag::Text {
+                    let text = self.token_slice(self.token_index).trim();
+                    if text.starts_with(':') {
+                        has_left_colon = true;
+                    }
+                    if text.ends_with(':') {
+                        has_right_colon = true;
+                    }
+                    has_dash = text.contains('-');
+                    self.next_token(); // consume text
+                } else if self.current_tag() == TokenTag::Space
+                    || self.current_tag() == TokenTag::Indent
+                {
+                    self.next_token(); // skip whitespace
+                    continue;
+                }
+
+                if has_dash {
+                    let alignment = match (has_left_colon, has_right_colon) {
+                        (true, true) => TableAlignment::Center,
+                        (true, false) => TableAlignment::Left,
+                        (false, true) => TableAlignment::Right,
+                        (false, false) => TableAlignment::None,
+                    };
+                    alignments.push(alignment);
+                }
+
+                if self.current_tag() == TokenTag::Pipe {
+                    self.next_token(); // consume |
+                }
+                if self.token_index == before {
+                    self.warn(ErrorTag::UnexpectedToken);
+                    self.token_index += 1;
+                }
+            }
+            // Consume trailing newline
+            self.eat_token(TokenTag::Newline);
+        }
+
+        // Pad alignments to match column count
+        while (alignments.len() as u32) < num_columns {
+            alignments.push(TableAlignment::None);
+        }
+        alignments.truncate(num_columns as usize);
+
+        // Parse body rows
+        while self.current_tag() == TokenTag::Pipe {
+            let before = self.token_index;
+            match self.parse_table_row() {
+                Ok(row) => self.scratch.push(row),
+                Err(_) => break,
+            }
+            if self.token_index == before {
+                self.token_index += 1;
+            }
+        }
+
+        let rows: Vec<NodeIndex> = self.scratch[scratch_top..].to_vec();
+        self.scratch.truncate(scratch_top);
+
+        let num_rows = rows.len() as u32;
+
+        // Store extra data: [num_columns, num_rows, align_0..align_N-1, row_0..row_M-1]
+        let extra_start = self.extra_data.len() as u32;
+        self.extra_data.push(num_columns);
+        self.extra_data.push(num_rows);
+        for align in &alignments {
+            self.extra_data.push(*align as u32);
+        }
+        for row in &rows {
+            self.extra_data.push(*row);
+        }
+
+        Ok(self.set_node(
+            node_index,
+            Node {
+                tag: NodeTag::Table,
+                main_token: start_token,
+                data: NodeData::Extra(extra_start),
+            },
+        ))
+    }
+
+    fn parse_table_row(&mut self) -> PResult<NodeIndex> {
+        let start_token = self.token_index;
+        self.expect_token(TokenTag::Pipe)?; // leading |
+
+        let node_index = self.reserve_node(NodeTag::TableRow);
+        let scratch_top = self.scratch.len();
+
+        loop {
+            // Check for end of row
+            if self.current_tag() == TokenTag::Newline
+                || self.current_tag() == TokenTag::Eof
+                || self.current_tag() == TokenTag::BlankLine
+            {
+                break;
+            }
+
+            let before = self.token_index;
+
+            // Parse cell content
+            let cell = self.parse_table_cell()?;
+            self.scratch.push(cell);
+
+            // Expect pipe or end of row
+            if self.current_tag() == TokenTag::Pipe {
+                self.next_token(); // consume |
+
+                // Check if this was a trailing pipe (next is newline/eof)
+                if self.current_tag() == TokenTag::Newline
+                    || self.current_tag() == TokenTag::Eof
+                    || self.current_tag() == TokenTag::BlankLine
+                {
+                    break;
+                }
+            }
+
+            // Forward-progress guard
+            if self.token_index == before {
+                self.token_index += 1;
+            }
+        }
+
+        // Consume trailing newline
+        self.eat_token(TokenTag::Newline);
+
+        let cells: Vec<NodeIndex> = self.scratch[scratch_top..].to_vec();
+        self.scratch.truncate(scratch_top);
+        let children_span = self.list_to_span(&cells);
+
+        Ok(self.set_node(
+            node_index,
+            Node {
+                tag: NodeTag::TableRow,
+                main_token: start_token,
+                data: NodeData::Children(children_span),
+            },
+        ))
+    }
+
+    fn parse_table_cell(&mut self) -> PResult<NodeIndex> {
+        let start_token = self.token_index;
+        let node_index = self.reserve_node(NodeTag::TableCell);
+
+        let scratch_top = self.scratch.len();
+
+        // Skip leading space
+        if self.current_tag() == TokenTag::Space || self.current_tag() == TokenTag::Indent {
+            self.next_token();
+        }
+
+        // Parse inline content until Pipe or Newline
+        while self.current_tag() != TokenTag::Pipe
+            && self.current_tag() != TokenTag::Newline
+            && self.current_tag() != TokenTag::Eof
+            && self.current_tag() != TokenTag::BlankLine
+        {
+            let before = self.token_index;
+            let inline_node = self.parse_inline()?;
+            self.scratch.push(inline_node);
+            if self.token_index == before {
+                self.token_index += 1;
+            }
+        }
+
+        let children: Vec<NodeIndex> = self.scratch[scratch_top..].to_vec();
+        self.scratch.truncate(scratch_top);
+
+        // Trim trailing space from children: if last child is a text node with trailing spaces,
+        // we'll keep it as-is (the renderer can handle trimming if needed)
+
+        let children_span = self.list_to_span(&children);
+
+        Ok(self.set_node(
+            node_index,
+            Node {
+                tag: NodeTag::TableCell,
+                main_token: start_token,
+                data: NodeData::Children(children_span),
+            },
+        ))
+    }
+
     fn parse_text_expression(&mut self) -> PResult<NodeIndex> {
         let expr_start = self.expect_token(TokenTag::ExprStart)?;
 
@@ -979,6 +1199,7 @@ impl Parser {
         let scratch_top = self.scratch.len();
 
         while self.current_tag() != TokenTag::JsxCloseTag && self.current_tag() != TokenTag::Eof {
+            let before = self.token_index;
             let tag = self.current_tag();
 
             match tag {
@@ -1051,6 +1272,10 @@ impl Parser {
                 _ => {
                     self.token_index += 1;
                 }
+            }
+            if self.token_index == before {
+                self.warn(ErrorTag::UnexpectedToken);
+                self.token_index += 1;
             }
         }
 
@@ -1174,8 +1399,13 @@ impl Parser {
                 self.warn(ErrorTag::ExpectedClosingTag);
                 return Err(ParseError::ParseError);
             }
+            let before = self.token_index;
             let child = self.parse_block()?;
             self.scratch.push(child);
+            if self.token_index == before {
+                self.warn(ErrorTag::UnexpectedToken);
+                self.token_index += 1;
+            }
         }
 
         let children_vec: Vec<NodeIndex> = self.scratch[scratch_top..].to_vec();
@@ -1264,5 +1494,36 @@ mod tests {
             let info = ast.frontmatter_info(idx);
             assert_eq!(FrontmatterFormat::Json, info.format);
         }
+    }
+
+    #[test]
+    fn parse_with_unclosed_heredoc_marker_in_jsx_text_terminates() {
+        let source = r#"# Waffle
+
+<Card>
+<Caption>cat > "$HOME/.config/systemd/user/orange-wallet.service" <<EOF
+[Unit]
+Description=Orange Wallet
+EOF
+</Caption>
+</Card>
+"#;
+
+        let ast = parse(source);
+        assert!(!ast.nodes.is_empty(), "parser should return an AST");
+        assert!(
+            ast.errors.len() <= MAX_PARSE_ERRORS,
+            "error list must stay bounded"
+        );
+    }
+
+    #[test]
+    fn parse_table_recovery_progresses_after_invalid_cell_start() {
+        let source = "| [ |\n| --- |\n";
+        let ast = parse(source);
+        assert!(
+            ast.errors.len() <= MAX_PARSE_ERRORS,
+            "error list must stay bounded"
+        );
     }
 }

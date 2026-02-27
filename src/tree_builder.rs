@@ -449,6 +449,46 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
             output.push(']');
         }
 
+        NodeTag::Table => {
+            let alignments = ast.table_alignments(node_idx);
+            output.push_str(",\"alignments\":[");
+            for (i, align) in alignments.iter().enumerate() {
+                if i > 0 {
+                    output.push(',');
+                }
+                let align_str = match align {
+                    TableAlignment::None => "\"none\"",
+                    TableAlignment::Left => "\"left\"",
+                    TableAlignment::Center => "\"center\"",
+                    TableAlignment::Right => "\"right\"",
+                };
+                output.push_str(align_str);
+            }
+            output.push(']');
+
+            output.push_str(",\"children\":[");
+            let children = ast.children(node_idx);
+            for (i, &child_idx) in children.iter().enumerate() {
+                if i > 0 {
+                    output.push(',');
+                }
+                serialize_node(ast, child_idx, output, options);
+            }
+            output.push(']');
+        }
+
+        NodeTag::TableRow | NodeTag::TableCell => {
+            output.push_str(",\"children\":[");
+            let children = ast.children(node_idx);
+            for (i, &child_idx) in children.iter().enumerate() {
+                if i > 0 {
+                    output.push(',');
+                }
+                serialize_node(ast, child_idx, output, options);
+            }
+            output.push(']');
+        }
+
         NodeTag::ListUnordered | NodeTag::ListOrdered => {
             output.push_str(",\"ordered\":");
             output.push_str(if node.tag == NodeTag::ListOrdered {

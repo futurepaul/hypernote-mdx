@@ -28,6 +28,9 @@ pub enum Tag {
     Hr,
     BlankLine,
 
+    // Table tokens
+    Pipe,
+
     // Markdown inline tokens
     Text,
     StrongStart,
@@ -103,6 +106,7 @@ impl Tag {
             Tag::JsxDot => ".",
             Tag::JsxColon => ":",
             Tag::JsxEqual => "=",
+            Tag::Pipe => "|",
             Tag::CheckboxUnchecked => "[ ]",
             Tag::CheckboxChecked => "[x]",
             Tag::Hr => "---",
@@ -125,6 +129,7 @@ impl Tag {
             Tag::CheckboxChecked => "checkbox_checked",
             Tag::BlockquoteStart => "blockquote_start",
             Tag::Hr => "hr",
+            Tag::Pipe => "pipe",
             Tag::BlankLine => "blank_line",
             Tag::Text => "text",
             Tag::StrongStart => "strong_start",

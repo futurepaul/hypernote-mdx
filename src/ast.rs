@@ -37,6 +37,9 @@ pub enum NodeTag {
     ListOrdered,
     ListItem,
     Hr,
+    Table,
+    TableRow,
+    TableCell,
 
     // Markdown inline nodes
     Text,
@@ -92,6 +95,9 @@ impl NodeTag {
             NodeTag::MdxJsxAttribute => "mdx_jsx_attribute",
             NodeTag::MdxEsmImport => "mdx_esm_import",
             NodeTag::MdxEsmExport => "mdx_esm_export",
+            NodeTag::Table => "table",
+            NodeTag::TableRow => "table_row",
+            NodeTag::TableCell => "table_cell",
             NodeTag::Frontmatter => "frontmatter",
         }
     }
@@ -220,6 +226,22 @@ pub struct ListItemData {
     pub children_end: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableAlignment {
+    None = 0,
+    Left = 1,
+    Center = 2,
+    Right = 3,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TableData {
+    pub num_columns: u32,
+    pub num_rows: u32,
+    pub alignments_start: u32,
+    pub rows_start: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Span {
     pub start: ByteOffset,
@@ -238,7 +260,9 @@ impl Ast {
             | NodeTag::ListOrdered
             | NodeTag::Strong
             | NodeTag::Emphasis
-            | NodeTag::MdxJsxFragment => {
+            | NodeTag::MdxJsxFragment
+            | NodeTag::TableRow
+            | NodeTag::TableCell => {
                 if let NodeData::Children(range) = node.data {
                     let slice = &self.extra_data[range.start as usize..range.end as usize];
                     // SAFETY: NodeIndex and u32 have the same repr
@@ -261,6 +285,14 @@ impl Ast {
                 let info = self.list_item_info(node_idx);
                 let slice =
                     &self.extra_data[info.children_start as usize..info.children_end as usize];
+                unsafe {
+                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
+                }
+            }
+            NodeTag::Table => {
+                let info = self.table_info(node_idx);
+                let slice = &self.extra_data
+                    [info.rows_start as usize..(info.rows_start + info.num_rows) as usize];
                 unsafe {
                     std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
                 }
@@ -489,6 +521,40 @@ impl Ast {
             content_start: self.extra_data[idx + 1],
             content_end: self.extra_data[idx + 2],
         }
+    }
+
+    /// Extract table info from extra_data
+    pub fn table_info(&self, node_index: NodeIndex) -> TableData {
+        let node = &self.nodes[node_index as usize];
+        debug_assert!(node.tag == NodeTag::Table);
+        let idx = match node.data {
+            NodeData::Extra(i) => i as usize,
+            _ => panic!("table node has wrong data type"),
+        };
+        let num_columns = self.extra_data[idx];
+        let num_rows = self.extra_data[idx + 1];
+        TableData {
+            num_columns,
+            num_rows,
+            alignments_start: idx as u32 + 2,
+            rows_start: idx as u32 + 2 + num_columns,
+        }
+    }
+
+    /// Get table column alignments
+    pub fn table_alignments(&self, node_index: NodeIndex) -> Vec<TableAlignment> {
+        let info = self.table_info(node_index);
+        (0..info.num_columns)
+            .map(|i| {
+                let raw = self.extra_data[(info.alignments_start + i) as usize];
+                match raw {
+                    1 => TableAlignment::Left,
+                    2 => TableAlignment::Center,
+                    3 => TableAlignment::Right,
+                    _ => TableAlignment::None,
+                }
+            })
+            .collect()
     }
 
     /// Extract a Range from extra_data
