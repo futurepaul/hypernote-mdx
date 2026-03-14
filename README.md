@@ -31,6 +31,42 @@ cargo run -- example.hnmd
 
 Prints the tokenized AST and tree structure for a given `.hnmd` file.
 
+## Development
+
+This repo includes a `justfile` for common test and timing workflows.
+
+```sh
+just test
+just test-one markdown_ast_snapshot_is_stable
+just test-suite ast_snapshots
+just time
+just time-one markdown_ast_snapshot_is_stable
+just time-suite ast_snapshots
+just test-build-timings
+just bench
+just bench-one markdown_ast_snapshot_is_stable
+just bench-suite ast_snapshots
+```
+
+`just bench*` recipes use [`hyperfine`](https://github.com/sharkdp/hyperfine). Install it with:
+
+```sh
+cargo install hyperfine
+```
+
+## Autoresearch
+
+This worktree also supports an `autoresearch`-style optimization loop for `src/` only.
+
+```sh
+just research-baseline
+just research-run "reduce repeated token slicing"
+just research-plot
+just research-serve
+```
+
+Open `http://localhost:8765` after starting `just research-serve` to watch the progress chart and recent experiment table in your browser.
+
 ## What it parses
 
 **Markdown:** headings, paragraphs, bold, italic, inline code, code blocks, links, images, blockquotes, ordered/unordered lists, horizontal rules, hard breaks.
