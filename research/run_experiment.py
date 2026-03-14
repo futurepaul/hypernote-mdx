@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
+import shlex
 import subprocess
 import sys
 import time
@@ -18,10 +18,9 @@ LOGS_DIR = RESEARCH_DIR / "logs"
 TMP_DIR = RESEARCH_DIR / "tmp"
 RESULTS_TSV = RESEARCH_DIR / "results.tsv"
 PLOT_SCRIPT = RESEARCH_DIR / "plot_progress.py"
+BATCH_SCRIPT = RESEARCH_DIR / "run_suite_batch.py"
 BUILD_COMMAND = ["cargo", "test", "--no-run", "--quiet"]
-SUITE_COMMAND = ["cargo", "test", "--quiet", "--", "--test-threads=1"]
 BUILD_COMMAND_TEXT = "cargo test --no-run --quiet"
-SUITE_COMMAND_TEXT = "cargo test --quiet -- --test-threads=1"
 TSV_HEADER = [
     "commit",
     "suite_seconds",
@@ -123,37 +122,24 @@ def measure_build(commit: str, timeout: int) -> tuple[float, bool]:
     return time.perf_counter() - started, result.returncode == 0
 
 
-def probe_suite(commit: str, timeout: int) -> tuple[float, bool]:
-    stdout_path = LOGS_DIR / f"{commit}.probe.stdout.log"
-    stderr_path = LOGS_DIR / f"{commit}.probe.stderr.log"
-    started = time.perf_counter()
-    try:
-        result = run(
-            SUITE_COMMAND,
-            timeout=timeout,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-        )
-    except subprocess.TimeoutExpired:
-        return 0.0, False
-    return time.perf_counter() - started, result.returncode == 0
-
-
-def resolve_bench_runs(
-    requested_runs: int,
-    min_benchmark_seconds: float,
-    probe_seconds: float,
-) -> int:
-    if probe_seconds <= 0.0:
-        return requested_runs
-    budget_runs = math.ceil(min_benchmark_seconds / probe_seconds)
-    return max(requested_runs, budget_runs)
-
-
-def measure_suite(commit: str, runs: int, warmup: int, timeout: int) -> tuple[float, float, bool]:
+def measure_suite(
+    commit: str,
+    runs: int,
+    warmup: int,
+    batch_count: int,
+    timeout: int,
+) -> tuple[float, float, bool]:
     json_path = TMP_DIR / f"{commit}.hyperfine.json"
     stdout_path = LOGS_DIR / f"{commit}.hyperfine.stdout.log"
     stderr_path = LOGS_DIR / f"{commit}.hyperfine.stderr.log"
+    batch_command = " ".join(
+        [
+            shlex.quote(sys.executable),
+            shlex.quote(str(BATCH_SCRIPT)),
+            "--count",
+            str(batch_count),
+        ]
+    )
     cmd = [
         "hyperfine",
         "--warmup",
@@ -164,7 +150,7 @@ def measure_suite(commit: str, runs: int, warmup: int, timeout: int) -> tuple[fl
         str(json_path),
         "--prepare",
         BUILD_COMMAND_TEXT,
-        SUITE_COMMAND_TEXT,
+        batch_command,
     ]
     try:
         result = run(
@@ -179,7 +165,11 @@ def measure_suite(commit: str, runs: int, warmup: int, timeout: int) -> tuple[fl
         return 0.0, 0.0, False
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     benchmark = payload["results"][0]
-    return float(benchmark["mean"]), float(benchmark["stddev"]), True
+    return (
+        float(benchmark["mean"]) / batch_count,
+        float(benchmark["stddev"]) / batch_count,
+        True,
+    )
 
 
 def decide_status(
@@ -233,12 +223,11 @@ def main() -> int:
         default="auto",
     )
     parser.add_argument("--runs", type=int, default=10)
-    parser.add_argument("--warmup", type=int, default=3)
-    parser.add_argument("--min-benchmark-seconds", type=float, default=6.0)
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--batch-count", type=int, default=10)
     parser.add_argument("--threshold-ms", type=float, default=10.0)
     parser.add_argument("--threshold-pct", type=float, default=3.0)
     parser.add_argument("--build-timeout", type=int, default=180)
-    parser.add_argument("--probe-timeout", type=int, default=180)
     parser.add_argument("--bench-timeout", type=int, default=300)
     args = parser.parse_args()
 
@@ -254,22 +243,14 @@ def main() -> int:
     build_seconds, build_ok = measure_build(commit, args.build_timeout)
 
     if build_ok:
-        probe_seconds, probe_ok = probe_suite(commit, args.probe_timeout)
-    else:
-        probe_seconds, probe_ok = 0.0, False
-
-    bench_runs = resolve_bench_runs(
-        args.runs, args.min_benchmark_seconds, probe_seconds
-    )
-
-    if build_ok and probe_ok:
+        bench_runs = args.runs * args.batch_count
         suite_seconds, suite_stddev_seconds, bench_ok = measure_suite(
-            commit, bench_runs, args.warmup, args.bench_timeout
+            commit, args.runs, args.warmup, args.batch_count, args.bench_timeout
         )
     else:
-        suite_seconds, suite_stddev_seconds, bench_ok = 0.0, 0.0, False
+        bench_runs, suite_seconds, suite_stddev_seconds, bench_ok = 0, 0.0, 0.0, False
 
-    if not build_ok or not probe_ok or not bench_ok:
+    if not build_ok or not bench_ok:
         status = "crash"
     else:
         status = decide_status(
@@ -293,7 +274,8 @@ def main() -> int:
 
     print("---")
     print(f"commit:               {commit}")
-    print(f"probe_seconds:        {probe_seconds:.6f}")
+    print(f"hyperfine_runs:       {args.runs}")
+    print(f"suite_batch_count:    {args.batch_count}")
     print(f"bench_runs:           {bench_runs}")
     print(f"suite_mean_seconds:   {suite_seconds:.6f}")
     print(f"suite_stddev_seconds: {suite_stddev_seconds:.6f}")

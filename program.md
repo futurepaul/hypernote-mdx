@@ -49,11 +49,11 @@ The measurement harness works like this:
 
 1. Run `cargo test --no-run --quiet` as a build gate.
 2. Measure build time separately as a diagnostic.
-3. Run one unscored post-build probe of `cargo test --quiet -- --test-threads=1` to estimate suite runtime.
-4. Benchmark `cargo test --quiet -- --test-threads=1` with `hyperfine`.
-5. Use `hyperfine --prepare 'cargo test --no-run --quiet'` so compilation is outside the measured window.
-6. Auto-increase the timed `hyperfine` run count until the measured portion lasts several seconds total.
-7. Keep `--test-threads=1` in the benchmark command so the score is stable even if individual test targets have parallel temp-file races.
+3. Use `hyperfine` to benchmark a batch runner that executes `cargo test --quiet -- --test-threads=1` multiple times per sample.
+4. Use `hyperfine --prepare 'cargo test --no-run --quiet'` so compilation is outside the measured window.
+5. Keep `--test-threads=1` in the benchmark command so the score is stable even if individual test targets have parallel temp-file races.
+6. Normalize the batch timing back to `seconds per full suite run` for logging and charting.
+7. Use enough batch executions that every scored experiment includes many timed suite runs, typically 10 to 100 total.
 
 Primary score:
 - `suite_mean_seconds`
@@ -71,8 +71,8 @@ Do not make keep/discard decisions from tiny samples.
 
 Rules:
 - The official score must come from the harness, not from ad hoc commands.
-- The official `hyperfine` measurement must use many timed iterations, typically 10 to 100 runs.
-- The total timed benchmark budget should be several seconds, not a single short burst.
+- The official `hyperfine` measurement must benchmark batched suite runs, not single tiny suite samples.
+- The total timed benchmark should include many full-suite executions, typically 10 to 100.
 - Compile time is never part of the score.
 - The official measured command is the serialized test-harness variant, not the default parallel-per-binary variant.
 
@@ -121,6 +121,8 @@ Statuses:
 - `crash`
 
 The browser view is generated at `research/index.html` and `research/progress.png`.
+
+`bench_runs` means the total number of timed full-suite executions used for that experiment.
 
 ## Experiment loop
 
