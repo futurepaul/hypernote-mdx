@@ -49,10 +49,11 @@ The measurement harness works like this:
 
 1. Run `cargo test --no-run --quiet` as a build gate.
 2. Measure build time separately as a diagnostic.
-3. Run one unscored post-build probe of `cargo test --quiet` to estimate suite runtime.
-4. Benchmark `cargo test --quiet` with `hyperfine`.
+3. Run one unscored post-build probe of `cargo test --quiet -- --test-threads=1` to estimate suite runtime.
+4. Benchmark `cargo test --quiet -- --test-threads=1` with `hyperfine`.
 5. Use `hyperfine --prepare 'cargo test --no-run --quiet'` so compilation is outside the measured window.
 6. Auto-increase the timed `hyperfine` run count until the measured portion lasts several seconds total.
+7. Keep `--test-threads=1` in the benchmark command so the score is stable even if individual test targets have parallel temp-file races.
 
 Primary score:
 - `suite_mean_seconds`
@@ -73,6 +74,7 @@ Rules:
 - The official `hyperfine` measurement must use many timed iterations, typically 10 to 100 runs.
 - The total timed benchmark budget should be several seconds, not a single short burst.
 - Compile time is never part of the score.
+- The official measured command is the serialized test-harness variant, not the default parallel-per-binary variant.
 
 Per-target diagnosis is allowed, but it is diagnostic only.
 

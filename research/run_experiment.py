@@ -18,6 +18,10 @@ LOGS_DIR = RESEARCH_DIR / "logs"
 TMP_DIR = RESEARCH_DIR / "tmp"
 RESULTS_TSV = RESEARCH_DIR / "results.tsv"
 PLOT_SCRIPT = RESEARCH_DIR / "plot_progress.py"
+BUILD_COMMAND = ["cargo", "test", "--no-run", "--quiet"]
+SUITE_COMMAND = ["cargo", "test", "--quiet", "--", "--test-threads=1"]
+BUILD_COMMAND_TEXT = "cargo test --no-run --quiet"
+SUITE_COMMAND_TEXT = "cargo test --quiet -- --test-threads=1"
 TSV_HEADER = [
     "commit",
     "suite_seconds",
@@ -109,7 +113,7 @@ def measure_build(commit: str, timeout: int) -> tuple[float, bool]:
     started = time.perf_counter()
     try:
         result = run(
-            ["cargo", "test", "--no-run", "--quiet"],
+            BUILD_COMMAND,
             timeout=timeout,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
@@ -125,7 +129,7 @@ def probe_suite(commit: str, timeout: int) -> tuple[float, bool]:
     started = time.perf_counter()
     try:
         result = run(
-            ["cargo", "test", "--quiet"],
+            SUITE_COMMAND,
             timeout=timeout,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
@@ -159,8 +163,8 @@ def measure_suite(commit: str, runs: int, warmup: int, timeout: int) -> tuple[fl
         "--export-json",
         str(json_path),
         "--prepare",
-        "cargo test --no-run --quiet",
-        "cargo test --quiet",
+        BUILD_COMMAND_TEXT,
+        SUITE_COMMAND_TEXT,
     ]
     try:
         result = run(

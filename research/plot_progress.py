@@ -246,7 +246,7 @@ def main() -> int:
   <main>
     <h1>hypernote-mdx autoresearch</h1>
     <p>Auto-refreshes every 5 seconds. Serve this directory with <code>just research-serve</code>.</p>
-    <p>Official score: <code>hyperfine</code> on <code>cargo test --quiet</code> with compile excluded via <code>--prepare 'cargo test --no-run --quiet'</code>. The harness auto-increases timed runs so each benchmark spends several measured seconds, not a tiny probe.</p>
+    <p>Official score: <code>hyperfine</code> on <code>cargo test --quiet -- --test-threads=1</code> with compile excluded via <code>--prepare 'cargo test --no-run --quiet'</code>. The harness auto-increases timed runs so each benchmark spends several measured seconds, not a tiny probe.</p>
     <div class="grid">
       <div class="card">
         <div>Baseline</div>
