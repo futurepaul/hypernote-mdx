@@ -54,6 +54,19 @@ just bench-suite ast_snapshots
 cargo install hyperfine
 ```
 
+## Autoresearch
+
+This worktree also supports an `autoresearch`-style optimization loop for `src/` only.
+
+```sh
+just research-baseline
+just research-run "reduce repeated token slicing"
+just research-plot
+just research-serve
+```
+
+Open `http://localhost:8765` after starting `just research-serve` to watch the progress chart and recent experiment table in your browser.
+
 ## What it parses
 
 **Markdown:** headings, paragraphs, bold, italic, inline code, code blocks, links, images, blockquotes, ordered/unordered lists, horizontal rules, hard breaks.

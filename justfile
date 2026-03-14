@@ -50,3 +50,19 @@ bench-suite suite runs="10" warmup="1": _require-hyperfine
 # Benchmark one exact test with serialized execution for cleaner numbers.
 bench-one name runs="10" warmup="1": _require-hyperfine
   hyperfine --warmup {{warmup}} --runs {{runs}} 'cargo test {{name}} -- --exact --test-threads=1'
+
+# Run the baseline autoresearch measurement.
+research-baseline runs="5" warmup="1": _require-hyperfine
+  uv run python research/run_experiment.py --description baseline --status keep --runs {{runs}} --warmup {{warmup}}
+
+# Run one autoresearch experiment from the current commit.
+research-run description runs="5" warmup="1": _require-hyperfine
+  uv run python research/run_experiment.py --description '{{description}}' --status auto --runs {{runs}} --warmup {{warmup}}
+
+# Rebuild the browser-facing progress report from results.tsv.
+research-plot:
+  uv run python research/plot_progress.py
+
+# Serve the autoresearch report directory in a browser-friendly way.
+research-serve port="8765":
+  cd research && python3 -m http.server {{port}}
