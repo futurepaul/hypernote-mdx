@@ -52,12 +52,16 @@ bench-one name runs="10" warmup="1": _require-hyperfine
   hyperfine --warmup {{warmup}} --runs {{runs}} 'cargo test {{name}} -- --exact --test-threads=1'
 
 # Run the baseline autoresearch measurement.
-research-baseline runs="5" warmup="1": _require-hyperfine
-  uv run python research/run_experiment.py --description baseline --status keep --runs {{runs}} --warmup {{warmup}}
+research-baseline runs="10" warmup="3" min_seconds="6": _require-hyperfine
+  uv run python research/run_experiment.py --description baseline --status keep --runs {{runs}} --warmup {{warmup}} --min-benchmark-seconds {{min_seconds}}
 
 # Run one autoresearch experiment from the current commit.
-research-run description runs="5" warmup="1": _require-hyperfine
-  uv run python research/run_experiment.py --description '{{description}}' --status auto --runs {{runs}} --warmup {{warmup}}
+research-run description runs="10" warmup="3" min_seconds="6": _require-hyperfine
+  uv run python research/run_experiment.py --description '{{description}}' --status auto --runs {{runs}} --warmup {{warmup}} --min-benchmark-seconds {{min_seconds}}
+
+# Start a fresh autoresearch campaign by deleting prior results and logs.
+research-reset:
+  rm -rf research/results.tsv research/progress.png research/index.html research/logs research/tmp
 
 # Rebuild the browser-facing progress report from results.tsv.
 research-plot:

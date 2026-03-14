@@ -52,6 +52,10 @@ def main() -> int:
 
     df["suite_seconds"] = pd.to_numeric(df["suite_seconds"], errors="coerce")
     df["suite_stddev_seconds"] = pd.to_numeric(df["suite_stddev_seconds"], errors="coerce")
+    if "bench_runs" in df.columns:
+        df["bench_runs"] = pd.to_numeric(df["bench_runs"], errors="coerce")
+    else:
+        df["bench_runs"] = pd.NA
     df["build_seconds"] = pd.to_numeric(df["build_seconds"], errors="coerce")
     df["status"] = df["status"].str.strip().str.lower()
 
@@ -142,11 +146,16 @@ def main() -> int:
 
     recent_rows = []
     for _, row in df.tail(20).iterrows():
+        bench_runs = row["bench_runs"]
+        bench_runs_text = (
+            str(int(bench_runs)) if pd.notna(bench_runs) else "n/a"
+        )
         recent_rows.append(
             "<tr>"
             f"<td><code>{html.escape(str(row['commit']))}</code></td>"
             f"<td>{float(row['suite_seconds']):.6f}</td>"
             f"<td>{float(row['suite_stddev_seconds']):.6f}</td>"
+            f"<td>{bench_runs_text}</td>"
             f"<td>{float(row['build_seconds']):.6f}</td>"
             f"<td>{html.escape(str(row['status']))}</td>"
             f"<td>{html.escape(str(row['description']))}</td>"
@@ -237,6 +246,7 @@ def main() -> int:
   <main>
     <h1>hypernote-mdx autoresearch</h1>
     <p>Auto-refreshes every 5 seconds. Serve this directory with <code>just research-serve</code>.</p>
+    <p>Official score: <code>hyperfine</code> on <code>cargo test --quiet</code> with compile excluded via <code>--prepare 'cargo test --no-run --quiet'</code>. The harness auto-increases timed runs so each benchmark spends several measured seconds, not a tiny probe.</p>
     <div class="grid">
       <div class="card">
         <div>Baseline</div>
@@ -265,6 +275,7 @@ def main() -> int:
           <th>Commit</th>
           <th>Suite mean</th>
           <th>Stddev</th>
+          <th>Runs</th>
           <th>Build</th>
           <th>Status</th>
           <th>Description</th>

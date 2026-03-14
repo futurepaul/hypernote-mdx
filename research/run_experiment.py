@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import subprocess
 import sys
 import time
@@ -21,6 +22,7 @@ TSV_HEADER = [
     "commit",
     "suite_seconds",
     "suite_stddev_seconds",
+    "bench_runs",
     "build_seconds",
     "status",
     "description",
@@ -84,6 +86,14 @@ def ensure_results_tsv() -> None:
         writer.writerow(TSV_HEADER)
 
 
+def results_row_count() -> int:
+    if not RESULTS_TSV.exists():
+        return 0
+    with RESULTS_TSV.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        return sum(1 for _ in reader)
+
+
 def latest_keep() -> dict[str, str] | None:
     if not RESULTS_TSV.exists():
         return None
@@ -107,6 +117,33 @@ def measure_build(commit: str, timeout: int) -> tuple[float, bool]:
     except subprocess.TimeoutExpired:
         return time.perf_counter() - started, False
     return time.perf_counter() - started, result.returncode == 0
+
+
+def probe_suite(commit: str, timeout: int) -> tuple[float, bool]:
+    stdout_path = LOGS_DIR / f"{commit}.probe.stdout.log"
+    stderr_path = LOGS_DIR / f"{commit}.probe.stderr.log"
+    started = time.perf_counter()
+    try:
+        result = run(
+            ["cargo", "test", "--quiet"],
+            timeout=timeout,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0, False
+    return time.perf_counter() - started, result.returncode == 0
+
+
+def resolve_bench_runs(
+    requested_runs: int,
+    min_benchmark_seconds: float,
+    probe_seconds: float,
+) -> int:
+    if probe_seconds <= 0.0:
+        return requested_runs
+    budget_runs = math.ceil(min_benchmark_seconds / probe_seconds)
+    return max(requested_runs, budget_runs)
 
 
 def measure_suite(commit: str, runs: int, warmup: int, timeout: int) -> tuple[float, float, bool]:
@@ -167,6 +204,7 @@ def append_row(row: dict[str, str | float]) -> None:
                 row["commit"],
                 f"{row['suite_seconds']:.6f}",
                 f"{row['suite_stddev_seconds']:.6f}",
+                row["bench_runs"],
                 f"{row['build_seconds']:.6f}",
                 row["status"],
                 row["description"],
@@ -190,29 +228,44 @@ def main() -> int:
         choices=["auto", "keep", "discard", "crash"],
         default="auto",
     )
-    parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--min-benchmark-seconds", type=float, default=6.0)
     parser.add_argument("--threshold-ms", type=float, default=10.0)
     parser.add_argument("--threshold-pct", type=float, default=3.0)
     parser.add_argument("--build-timeout", type=int, default=180)
+    parser.add_argument("--probe-timeout", type=int, default=180)
     parser.add_argument("--bench-timeout", type=int, default=300)
     args = parser.parse_args()
 
     ensure_clean_git()
     ensure_dirs()
     ensure_results_tsv()
+    if args.description == "baseline" and results_row_count() > 0:
+        raise SystemExit(
+            "baseline already exists; run `just research-reset` before starting a new campaign"
+        )
 
     commit = capture(["git", "rev-parse", "--short", "HEAD"])
     build_seconds, build_ok = measure_build(commit, args.build_timeout)
 
     if build_ok:
+        probe_seconds, probe_ok = probe_suite(commit, args.probe_timeout)
+    else:
+        probe_seconds, probe_ok = 0.0, False
+
+    bench_runs = resolve_bench_runs(
+        args.runs, args.min_benchmark_seconds, probe_seconds
+    )
+
+    if build_ok and probe_ok:
         suite_seconds, suite_stddev_seconds, bench_ok = measure_suite(
-            commit, args.runs, args.warmup, args.bench_timeout
+            commit, bench_runs, args.warmup, args.bench_timeout
         )
     else:
         suite_seconds, suite_stddev_seconds, bench_ok = 0.0, 0.0, False
 
-    if not build_ok or not bench_ok:
+    if not build_ok or not probe_ok or not bench_ok:
         status = "crash"
     else:
         status = decide_status(
@@ -226,6 +279,7 @@ def main() -> int:
         "commit": commit,
         "suite_seconds": suite_seconds,
         "suite_stddev_seconds": suite_stddev_seconds,
+        "bench_runs": bench_runs,
         "build_seconds": build_seconds,
         "status": status,
         "description": args.description,
@@ -235,6 +289,8 @@ def main() -> int:
 
     print("---")
     print(f"commit:               {commit}")
+    print(f"probe_seconds:        {probe_seconds:.6f}")
+    print(f"bench_runs:           {bench_runs}")
     print(f"suite_mean_seconds:   {suite_seconds:.6f}")
     print(f"suite_stddev_seconds: {suite_stddev_seconds:.6f}")
     print(f"build_seconds:        {build_seconds:.6f}")

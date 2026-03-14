@@ -11,15 +11,17 @@ This loop runs in the dedicated git worktree on branch `autoresearch/master-base
 Before the loop begins:
 
 1. Confirm the branch is clean.
-2. Read these files for context:
+2. If starting a new campaign, clear old results first:
+   - `just research-reset`
+3. Read these files for context:
    - `README.md`
    - `program.md`
    - `justfile`
    - `src/**/*.rs`
-3. Do not read `tests/**` for modification ideas unless you need behavioral context.
-4. The first measurement must always be the baseline:
+4. Do not read `tests/**` for modification ideas unless you need behavioral context.
+5. The first measurement must always be the baseline:
    - `just research-baseline`
-5. Serve the browser view if the human wants live progress:
+6. Serve the browser view if the human wants live progress:
    - `just research-serve`
 
 ## Scope
@@ -47,17 +49,34 @@ The measurement harness works like this:
 
 1. Run `cargo test --no-run --quiet` as a build gate.
 2. Measure build time separately as a diagnostic.
-3. Benchmark `cargo test --quiet` with `hyperfine`.
-4. Use `hyperfine --prepare 'cargo test --no-run --quiet'` so compilation is outside the measured window.
+3. Run one unscored post-build probe of `cargo test --quiet` to estimate suite runtime.
+4. Benchmark `cargo test --quiet` with `hyperfine`.
+5. Use `hyperfine --prepare 'cargo test --no-run --quiet'` so compilation is outside the measured window.
+6. Auto-increase the timed `hyperfine` run count until the measured portion lasts several seconds total.
 
 Primary score:
 - `suite_mean_seconds`
 
 Secondary diagnostics:
 - `suite_stddev_seconds`
+- `bench_runs`
 - `build_seconds`
 
 Lower is better.
+
+## Measurement discipline
+
+Do not make keep/discard decisions from tiny samples.
+
+Rules:
+- The official score must come from the harness, not from ad hoc commands.
+- The official `hyperfine` measurement must use many timed iterations, typically 10 to 100 runs.
+- The total timed benchmark budget should be several seconds, not a single short burst.
+- Compile time is never part of the score.
+
+Per-target diagnosis is allowed, but it is diagnostic only.
+
+Do not treat separate `cargo test --test ...` command timings as a trustworthy breakdown of suite runtime. Cargo invocation overhead can dominate those numbers. If you need a hotspot hint, prefer timing compiled test binaries directly and treat the result as advisory.
 
 ## Simplicity criterion
 
@@ -89,9 +108,10 @@ Columns:
 1. `commit`
 2. `suite_seconds`
 3. `suite_stddev_seconds`
-4. `build_seconds`
-5. `status`
-6. `description`
+4. `bench_runs`
+5. `build_seconds`
+6. `status`
+7. `description`
 
 Statuses:
 - `keep`
@@ -124,6 +144,8 @@ Each experiment should contain exactly one main idea.
 - Do not change tests.
 - Do not change the benchmark harness.
 - Do not score compile time.
+- Do not lower the benchmark budget to save time.
+- Do not mix results from different measurement policies in one campaign.
 - Do not leave the branch dirty between experiments.
 - Do not batch multiple ideas into one commit.
 
