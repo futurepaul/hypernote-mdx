@@ -1,6 +1,8 @@
 /target
+/.venv/
 /research/results.tsv
 /research/progress.png
 /research/index.html
 /research/logs/
 /research/tmp/
+/research/__pycache__/
