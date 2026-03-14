@@ -127,7 +127,8 @@ pub fn serialize_tree_with_options(ast: &Ast, options: &SerializeOptions) -> Str
     output.push_str("{\"schema\":{\"name\":");
     write_json_string(&mut output, AST_SCHEMA_NAME);
     output.push_str(",\"version\":");
-    write!(output, "{}", AST_SCHEMA_VERSION).unwrap();
+    write!(output, "{}", AST_SCHEMA_VERSION)
+        .expect("writing schema version into a String cannot fail");
     output.push_str("},\"type\":\"root\",\"children\":[");
 
     // Find the document node
@@ -161,8 +162,10 @@ pub fn serialize_tree_with_options(ast: &Ast, options: &SerializeOptions) -> Str
         output.push_str("\"tag\":\"");
         output.push_str(err.tag.name());
         output.push('"');
-        write!(output, ",\"token\":{}", err.token).unwrap();
-        write!(output, ",\"byte_offset\":{}", err.byte_offset).unwrap();
+        write!(output, ",\"token\":{}", err.token)
+            .expect("writing error token into a String cannot fail");
+        write!(output, ",\"byte_offset\":{}", err.byte_offset)
+            .expect("writing error byte offset into a String cannot fail");
         output.push_str(",\"message\":");
         write_json_string(&mut output, err.tag.message());
         output.push('}');
@@ -187,13 +190,14 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
             ",\"position\":{{\"start\":{},\"end\":{}}}",
             span.start, span.end
         )
-        .unwrap();
+        .expect("writing node position into a String cannot fail");
     }
 
     match node.tag {
         NodeTag::Heading => {
             let info = ast.heading_info(node_idx);
-            write!(output, ",\"level\":{}", info.level).unwrap();
+            write!(output, ",\"level\":{}", info.level)
+                .expect("writing heading level into a String cannot fail");
             output.push_str(",\"children\":[");
             let children =
                 &ast.extra_data[info.children_start as usize..info.children_end as usize];
@@ -352,7 +356,8 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
                         if let Some(val_tok) = attr.value_token {
                             let raw = ast.token_slice(val_tok).trim();
                             if let Ok(parsed) = raw.parse::<f64>() {
-                                write!(output, "{}", parsed).unwrap();
+                                write!(output, "{}", parsed)
+                                    .expect("writing numeric JSX attribute into a String cannot fail");
                             } else {
                                 write_json_string(output, raw);
                             }
