@@ -19,6 +19,7 @@ Before the loop begins:
    - `justfile`
    - `src/**/*.rs`
 4. Do not read `tests/**` for modification ideas unless you need behavioral context.
+   - Exception: `tests/chat_workload.rs` is part of the intended performance shape and is worth reading for workload context.
 5. The first measurement must always be the baseline:
    - `just research-baseline`
 6. Serve the browser view if the human wants live progress:
@@ -44,6 +45,11 @@ The ban on modifying tests is absolute. Do not edit, delete, weaken, skip, filte
 ## Metric
 
 The official score is the benchmarked runtime of the whole test suite, excluding compile time.
+
+The suite now includes a production-shaped chat workload in `tests/chat_workload.rs`.
+That test repeatedly exercises `serialize_tree(&parse(message))` across hundreds of
+small and medium markdown/MDX messages in one long-lived process, which mirrors the
+current downstream Pika usage across the FFI boundary.
 
 The measurement harness works like this:
 
@@ -91,6 +97,7 @@ Prefer:
 - Tightening hot loops
 - Early exits
 - Reusing computed values
+- Improving repeated `parse + serialize_tree` throughput on chat-shaped inputs
 
 Avoid:
 - Large refactors
