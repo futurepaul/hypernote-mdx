@@ -1,23 +1,53 @@
 use crate::ast::*;
 use crate::token::Tag as TokenTag;
+use std::fmt::Write;
 
 /// Write a JSON-escaped string
 fn write_json_string(output: &mut String, s: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     output.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            '\x00'..='\x08' | '\x0b' | '\x0c' | '\x0e'..='\x1f' => {
-                output.push_str(&format!("\\u{:04x}", c as u32));
+    let bytes = s.as_bytes();
+    let mut chunk_start = 0usize;
+
+    for (i, &byte) in bytes.iter().enumerate() {
+        let escaped = match byte {
+            b'"' => Some("\\\""),
+            b'\\' => Some("\\\\"),
+            b'\n' => Some("\\n"),
+            b'\r' => Some("\\r"),
+            b'\t' => Some("\\t"),
+            _ => None,
+        };
+
+        if let Some(escape) = escaped {
+            if chunk_start < i {
+                output.push_str(&s[chunk_start..i]);
             }
-            _ => output.push(c),
+            output.push_str(escape);
+            chunk_start = i + 1;
+            continue;
+        }
+
+        if matches!(byte, 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f) {
+            if chunk_start < i {
+                output.push_str(&s[chunk_start..i]);
+            }
+            output.push_str("\\u00");
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+            chunk_start = i + 1;
         }
     }
+
+    if chunk_start < s.len() {
+        output.push_str(&s[chunk_start..]);
+    }
     output.push('"');
+}
+
+fn estimated_serialized_capacity(ast: &Ast) -> usize {
+    ast.source.len() + ast.nodes.len() * 48 + ast.errors.len() * 64 + 128
 }
 
 fn decode_html_entities(value: &str) -> String {
@@ -92,12 +122,12 @@ pub fn serialize_tree(ast: &Ast) -> String {
 
 /// Serialize the AST with options
 pub fn serialize_tree_with_options(ast: &Ast, options: &SerializeOptions) -> String {
-    let mut output = String::new();
+    let mut output = String::with_capacity(estimated_serialized_capacity(ast));
 
     output.push_str("{\"schema\":{\"name\":");
     write_json_string(&mut output, AST_SCHEMA_NAME);
     output.push_str(",\"version\":");
-    output.push_str(&AST_SCHEMA_VERSION.to_string());
+    write!(output, "{}", AST_SCHEMA_VERSION).unwrap();
     output.push_str("},\"type\":\"root\",\"children\":[");
 
     // Find the document node
@@ -128,9 +158,11 @@ pub fn serialize_tree_with_options(ast: &Ast, options: &SerializeOptions) -> Str
             output.push(',');
         }
         output.push('{');
-        output.push_str(&format!("\"tag\":\"{}\"", err.tag.name()));
-        output.push_str(&format!(",\"token\":{}", err.token));
-        output.push_str(&format!(",\"byte_offset\":{}", err.byte_offset));
+        output.push_str("\"tag\":\"");
+        output.push_str(err.tag.name());
+        output.push('"');
+        write!(output, ",\"token\":{}", err.token).unwrap();
+        write!(output, ",\"byte_offset\":{}", err.byte_offset).unwrap();
         output.push_str(",\"message\":");
         write_json_string(&mut output, err.tag.message());
         output.push('}');
@@ -144,20 +176,24 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
     let node = &ast.nodes[node_idx as usize];
 
     output.push('{');
-    output.push_str(&format!("\"type\":\"{}\"", node.tag.name()));
+    output.push_str("\"type\":\"");
+    output.push_str(node.tag.name());
+    output.push('"');
 
     if options.include_positions {
         let span = ast.node_span(node_idx);
-        output.push_str(&format!(
+        write!(
+            output,
             ",\"position\":{{\"start\":{},\"end\":{}}}",
             span.start, span.end
-        ));
+        )
+        .unwrap();
     }
 
     match node.tag {
         NodeTag::Heading => {
             let info = ast.heading_info(node_idx);
-            output.push_str(&format!(",\"level\":{}", info.level));
+            write!(output, ",\"level\":{}", info.level).unwrap();
             output.push_str(",\"children\":[");
             let children =
                 &ast.extra_data[info.children_start as usize..info.children_end as usize];
@@ -316,7 +352,7 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
                         if let Some(val_tok) = attr.value_token {
                             let raw = ast.token_slice(val_tok).trim();
                             if let Ok(parsed) = raw.parse::<f64>() {
-                                output.push_str(&parsed.to_string());
+                                write!(output, "{}", parsed).unwrap();
                             } else {
                                 write_json_string(output, raw);
                             }
