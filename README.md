@@ -47,6 +47,7 @@ Typed semantic accessors live on `Ast`:
 - `expression_info`
 - `frontmatter_view`
 - `jsx_attribute_views`
+- `jsx_element_view`
 - `plain_text_parts`
 - `plain_text_parts_children`
 - `plain_text`
@@ -63,6 +64,8 @@ Typed semantic values include:
 - `FrontmatterInfoView`
 - `JsxAttributeView`
 - `JsxAttributeValue`
+- `JsxElementView`
+- `JsxElementKind`
 - `PlainTextPart`
 - `PlainTextOptions`
 - `ExpressionTextPolicy`
@@ -90,6 +93,27 @@ assert!(matches!(attrs[2].value, JsxAttributeValue::Expression("state.count")));
 ```
 
 JSX string values are already unquoted and entity-decoded. Numeric and boolean values come back typed. If a caller constructs a malformed AST manually, `JsxAttributeValue::InvalidNumber(&str)` preserves the raw value instead of panicking or guessing.
+
+For element-level JSX inspection, `jsx_element_view` packages the element name, decoded attrs, child node slice, and whether the node is normal or self-closing:
+
+```rust
+use hypernote_mdx::ast::NodeTag;
+use hypernote_mdx::semantic::JsxElementKind;
+
+let ast = hypernote_mdx::parse(r#"<Card title="Inbox"><Body>hello</Body></Card>"#);
+let card = ast
+  .nodes
+  .iter()
+  .enumerate()
+  .find_map(|(idx, node)| (node.tag == NodeTag::MdxJsxElement).then_some(idx as u32))
+  .and_then(|idx| ast.jsx_element_view(idx))
+  .expect("expected JSX element");
+
+assert_eq!("Card", card.name);
+assert_eq!(JsxElementKind::Normal, card.kind);
+assert_eq!(1, card.attrs.len());
+assert_eq!(1, card.children.len());
+```
 
 ### Plain Text And Expressions
 
@@ -127,6 +151,32 @@ assert_eq!("Value: {expr}", placeholder);
 ```
 
 The default policy is `ExpressionTextPolicy::Source`. That keeps expression parsing in the parser crate while leaving application-specific interpretation to downstream code.
+
+### Source Positions
+
+For downstream diagnostics, the AST can map byte offsets and node starts to one-based `line:column` positions:
+
+```rust
+use hypernote_mdx::ast::NodeTag;
+
+let source = "before\n\n<Card />\n";
+let ast = hypernote_mdx::parse(source);
+
+assert_eq!(1, ast.line_col(0).line);
+assert_eq!(1, ast.line_col(0).column);
+assert_eq!(3, ast.line_col(8).line);
+
+let jsx = ast
+  .nodes
+  .iter()
+  .enumerate()
+  .find_map(|(idx, node)| (node.tag == NodeTag::MdxJsxSelfClosing).then_some(idx as u32))
+  .expect("expected JSX node");
+
+let pos = ast.node_position(jsx);
+assert_eq!(3, pos.line);
+assert_eq!(1, pos.column);
+```
 
 ### CLI
 
@@ -248,8 +298,15 @@ let text = ast.token_slice(token_idx);
 // Read typed semantic data without decoding extra_data manually
 let maybe_link = ast.link_view(node_idx);
 
+// Read typed JSX element data in one call
+let maybe_jsx = ast.jsx_element_view(node_idx);
+
 // Find the deepest node at a byte offset
 let node = ast.node_at_offset(42);
+
+// Convert byte offsets or node starts into one-based positions
+let pos = ast.line_col(42);
+let node_pos = ast.node_position(node_idx);
 ```
 
 ## License
