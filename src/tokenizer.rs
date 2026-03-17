@@ -15,8 +15,11 @@ pub struct Tokenizer<'a> {
     line_start: u32,
     mode: Mode,
     mode_stack: Vec<Mode>,
-    strong_depth: u32,
-    emphasis_depth: u32,
+    star_strong_depth: u32,
+    star_emphasis_depth: u32,
+    underscore_strong_depth: u32,
+    underscore_emphasis_depth: u32,
+    strikethrough_depth: u32,
     after_link_text: bool,
     in_link_url: bool,
     in_table: bool,
@@ -31,8 +34,11 @@ impl<'a> Tokenizer<'a> {
             line_start: 0,
             mode: Mode::Markdown,
             mode_stack: Vec::new(),
-            strong_depth: 0,
-            emphasis_depth: 0,
+            star_strong_depth: 0,
+            star_emphasis_depth: 0,
+            underscore_strong_depth: 0,
+            underscore_emphasis_depth: 0,
+            strikethrough_depth: 0,
             after_link_text: false,
             in_link_url: false,
             in_table: false,
@@ -335,10 +341,10 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        // Special case: * or ** at line start could be emphasis/strong
-        if first_char == b'*' {
+        // Special case: *, **, _, or __ at line start could be emphasis/strong
+        if first_char == b'*' || first_char == b'_' {
             self.index = start + 1;
-            return self.maybe_strong_or_emphasis(start);
+            return self.maybe_strong_or_emphasis(start, first_char);
         }
 
         // Otherwise, treat as text
@@ -403,7 +409,23 @@ impl<'a> Tokenizer<'a> {
                     return self.text(start);
                 }
                 self.index += 1;
-                self.maybe_strong_or_emphasis(start)
+                self.maybe_strong_or_emphasis(start, b'*')
+            }
+            b'_' => {
+                if self.should_parse_underscore_delimiter(start) {
+                    self.index += 1;
+                    self.maybe_strong_or_emphasis(start, b'_')
+                } else {
+                    self.text(start)
+                }
+            }
+            b'~' => {
+                if self.buf(self.index + 1) == b'~' {
+                    self.index += 2;
+                    self.maybe_strikethrough(start)
+                } else {
+                    self.text(start)
+                }
             }
             b'`' => {
                 self.index += 1;
@@ -461,23 +483,59 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    fn maybe_strong_or_emphasis(&mut self, start: u32) -> Token {
-        if self.buf(self.index) == b'*' {
+    fn maybe_strong_or_emphasis(&mut self, start: u32, delimiter: u8) -> Token {
+        let is_strong_delimiter = self.buf(self.index) == delimiter;
+        let (strong_depth, emphasis_depth) = if delimiter == b'*' {
+            (&mut self.star_strong_depth, &mut self.star_emphasis_depth)
+        } else {
+            (
+                &mut self.underscore_strong_depth,
+                &mut self.underscore_emphasis_depth,
+            )
+        };
+
+        if is_strong_delimiter {
             self.index += 1;
-            if self.strong_depth > 0 {
-                self.strong_depth -= 1;
+            if *strong_depth > 0 {
+                *strong_depth -= 1;
                 self.make_token(Tag::StrongEnd, start)
             } else {
-                self.strong_depth += 1;
+                *strong_depth += 1;
                 self.make_token(Tag::StrongStart, start)
             }
-        } else if self.emphasis_depth > 0 {
-            self.emphasis_depth -= 1;
+        } else if *emphasis_depth > 0 {
+            *emphasis_depth -= 1;
             self.make_token(Tag::EmphasisEnd, start)
         } else {
-            self.emphasis_depth += 1;
+            *emphasis_depth += 1;
             self.make_token(Tag::EmphasisStart, start)
         }
+    }
+
+    fn maybe_strikethrough(&mut self, start: u32) -> Token {
+        if self.strikethrough_depth > 0 {
+            self.strikethrough_depth -= 1;
+            self.make_token(Tag::StrikethroughEnd, start)
+        } else {
+            self.strikethrough_depth += 1;
+            self.make_token(Tag::StrikethroughStart, start)
+        }
+    }
+
+    fn should_parse_underscore_delimiter(&self, start: u32) -> bool {
+        let prev = if start == 0 { 0 } else { self.buf(start - 1) };
+        let next = self.buf(start + 1);
+
+        let prev_is_word = prev.is_ascii_alphanumeric();
+        let next_is_word = next.is_ascii_alphanumeric();
+        let prev_is_space = prev == 0 || prev == b' ' || prev == b'\t' || prev == b'\n';
+        let next_is_space = next == 0 || next == b' ' || next == b'\t' || next == b'\n';
+
+        if prev_is_word && next_is_word {
+            return false;
+        }
+
+        !prev_is_space || !next_is_space
     }
 
     fn text(&mut self, start: u32) -> Token {
@@ -492,6 +550,18 @@ impl<'a> Tokenizer<'a> {
                     } else {
                         break;
                     }
+                }
+                b'_' => {
+                    if self.should_parse_underscore_delimiter(self.index) {
+                        break;
+                    }
+                    self.index += 1;
+                }
+                b'~' => {
+                    if self.buf(self.index + 1) == b'~' {
+                        break;
+                    }
+                    self.index += 1;
                 }
                 b']' => {
                     if self.index as usize + 1 < self.buffer.len()

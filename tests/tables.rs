@@ -39,7 +39,8 @@ fn basic_2x2_table() {
 
 #[test]
 fn table_with_alignments() {
-    let source = "| Left | Center | Right | None |\n| :--- | :---: | ---: | --- |\n| a | b | c | d |\n";
+    let source =
+        "| Left | Center | Right | None |\n| :--- | :---: | ---: | --- |\n| a | b | c | d |\n";
     let ast = parse(source);
 
     assert!(ast.errors.is_empty(), "errors: {:?}", ast.errors);
@@ -153,7 +154,11 @@ fn roundtrip_basic_table() {
     let rendered = render(&ast1);
     let ast2 = parse(&rendered);
 
-    assert!(ast2.errors.is_empty(), "roundtrip errors: {:?}", ast2.errors);
+    assert!(
+        ast2.errors.is_empty(),
+        "roundtrip errors: {:?}",
+        ast2.errors
+    );
 
     // Both should have a Table node
     assert!(find_node(&ast1, NodeTag::Table).is_some());
@@ -177,7 +182,11 @@ fn roundtrip_table_with_alignments() {
     let rendered = render(&ast1);
     let ast2 = parse(&rendered);
 
-    assert!(ast2.errors.is_empty(), "roundtrip errors: {:?}", ast2.errors);
+    assert!(
+        ast2.errors.is_empty(),
+        "roundtrip errors: {:?}",
+        ast2.errors
+    );
 
     let table1 = find_node(&ast1, NodeTag::Table).unwrap();
     let table2 = find_node(&ast2, NodeTag::Table).unwrap();
@@ -197,7 +206,10 @@ fn json_serialization_table() {
 
     // Find the table node
     let children = parsed["children"].as_array().unwrap();
-    let table = children.iter().find(|c| c["type"] == "table").expect("table in JSON");
+    let table = children
+        .iter()
+        .find(|c| c["type"] == "table")
+        .expect("table in JSON");
 
     // Check alignments
     let alignments = table["alignments"].as_array().unwrap();
@@ -276,7 +288,10 @@ fn table_cell_text_content() {
     // Check header cell text
     let header_cells = ast.children(rows[0]);
     let cell0_children = ast.children(header_cells[0]);
-    assert!(!cell0_children.is_empty(), "header cell should have children");
+    assert!(
+        !cell0_children.is_empty(),
+        "header cell should have children"
+    );
 
     // Find text node and check content
     let text_node = &ast.nodes[cell0_children[0] as usize];

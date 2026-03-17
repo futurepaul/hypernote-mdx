@@ -90,10 +90,12 @@ fn serializes_json_frontmatter() {
 
     assert_eq!(fm["type"], "frontmatter");
     assert_eq!(fm["format"], "json");
-    assert!(fm["value"]
-        .as_str()
-        .unwrap()
-        .contains("\"title\": \"Test\""));
+    assert!(
+        fm["value"]
+            .as_str()
+            .unwrap()
+            .contains("\"title\": \"Test\"")
+    );
 }
 
 #[test]

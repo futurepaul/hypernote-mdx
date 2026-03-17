@@ -2,8 +2,7 @@ use hypernote_mdx::{parse, render, serialize_tree};
 
 #[test]
 fn jsx_attribute_entities_roundtrip_and_decode_in_ast() {
-    let source =
-        "<Button label=\"Fish &amp; Chips &lt;3 &gt; 2 &quot;quote&quot;\" />\n";
+    let source = "<Button label=\"Fish &amp; Chips &lt;3 &gt; 2 &quot;quote&quot;\" />\n";
     let ast = parse(source);
 
     assert!(ast.errors.is_empty(), "errors: {:?}", ast.errors);

@@ -6,3 +6,7 @@
 /research/logs/
 /research/tmp/
 /research/__pycache__/
+/fuzz/target
+/fuzz/Cargo.lock
+/fuzz/artifacts
+/fuzz/coverage

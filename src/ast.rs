@@ -45,6 +45,7 @@ pub enum NodeTag {
     Text,
     Strong,
     Emphasis,
+    Strikethrough,
     CodeInline,
     Link,
     Image,
@@ -83,6 +84,7 @@ impl NodeTag {
             NodeTag::Text => "text",
             NodeTag::Strong => "strong",
             NodeTag::Emphasis => "emphasis",
+            NodeTag::Strikethrough => "strikethrough",
             NodeTag::CodeInline => "code_inline",
             NodeTag::Link => "link",
             NodeTag::Image => "image",
@@ -215,7 +217,8 @@ pub struct Heading {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Link {
-    pub text_node: Option<NodeIndex>,
+    pub children_start: u32,
+    pub children_end: u32,
     pub url_token: TokenIndex,
 }
 
@@ -249,9 +252,35 @@ pub struct Span {
 }
 
 impl Ast {
+    fn node(&self, node_idx: NodeIndex) -> Option<&Node> {
+        self.nodes.get(node_idx as usize)
+    }
+
+    fn extra_u32(&self, index: u32) -> Option<u32> {
+        self.extra_data.get(index as usize).copied()
+    }
+
+    fn node_index_slice(&self, start: u32, end: u32) -> &[NodeIndex] {
+        if start > end {
+            return &[];
+        }
+
+        let start = start as usize;
+        let end = end as usize;
+        let Some(slice) = self.extra_data.get(start..end) else {
+            return &[];
+        };
+
+        // SAFETY: NodeIndex and u32 have the same repr
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len()) }
+    }
+
     /// Get child node indices for a given node
     pub fn children(&self, node_idx: NodeIndex) -> &[NodeIndex] {
-        let node = &self.nodes[node_idx as usize];
+        let Some(node) = self.node(node_idx) else {
+            return &[];
+        };
+
         match node.tag {
             NodeTag::Document
             | NodeTag::Paragraph
@@ -260,50 +289,34 @@ impl Ast {
             | NodeTag::ListOrdered
             | NodeTag::Strong
             | NodeTag::Emphasis
+            | NodeTag::Strikethrough
             | NodeTag::MdxJsxFragment
             | NodeTag::TableRow
             | NodeTag::TableCell => {
                 if let NodeData::Children(range) = node.data {
-                    let slice = &self.extra_data[range.start as usize..range.end as usize];
-                    // SAFETY: NodeIndex and u32 have the same repr
-                    unsafe {
-                        std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
-                    }
+                    self.node_index_slice(range.start, range.end)
                 } else {
                     &[]
                 }
             }
             NodeTag::Heading => {
                 let info = self.heading_info(node_idx);
-                let slice =
-                    &self.extra_data[info.children_start as usize..info.children_end as usize];
-                unsafe {
-                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
-                }
+                self.node_index_slice(info.children_start, info.children_end)
             }
             NodeTag::ListItem => {
                 let info = self.list_item_info(node_idx);
-                let slice =
-                    &self.extra_data[info.children_start as usize..info.children_end as usize];
-                unsafe {
-                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
-                }
+                self.node_index_slice(info.children_start, info.children_end)
             }
             NodeTag::Table => {
                 let info = self.table_info(node_idx);
-                let slice = &self.extra_data
-                    [info.rows_start as usize..(info.rows_start + info.num_rows) as usize];
-                unsafe {
-                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
-                }
+                self.node_index_slice(
+                    info.rows_start,
+                    info.rows_start.saturating_add(info.num_rows),
+                )
             }
             NodeTag::MdxJsxElement => {
                 let elem = self.jsx_element(node_idx);
-                let slice =
-                    &self.extra_data[elem.children_start as usize..elem.children_end as usize];
-                unsafe {
-                    std::slice::from_raw_parts(slice.as_ptr() as *const NodeIndex, slice.len())
-                }
+                self.node_index_slice(elem.children_start, elem.children_end)
             }
             _ => &[],
         }
@@ -311,63 +324,109 @@ impl Ast {
 
     /// Get text slice for a token
     pub fn token_slice(&self, token_index: TokenIndex) -> &str {
-        let start = self.token_starts[token_index as usize] as usize;
+        let Some(&start) = self.token_starts.get(token_index as usize) else {
+            return "";
+        };
+        let start = start as usize;
         let end = if (token_index + 1) < self.token_starts.len() as u32 {
             self.token_starts[token_index as usize + 1] as usize
         } else {
             self.source.len()
         };
-        &self.source[start..end]
+        self.source.get(start..end).unwrap_or("")
     }
 
     /// Get the source text span for a node
     pub fn node_source(&self, node_index: NodeIndex) -> &str {
-        let node = &self.nodes[node_index as usize];
+        let Some(node) = self.node(node_index) else {
+            return "";
+        };
         let start_token = node.main_token;
         let end_token = {
             let node_children = self.children(node_index);
             if !node_children.is_empty() {
                 let last_child = node_children[node_children.len() - 1];
-                self.nodes[last_child as usize].main_token + 1
+                self.node(last_child)
+                    .map(|child| child.main_token.saturating_add(1))
+                    .unwrap_or_else(|| start_token.saturating_add(1))
             } else {
-                start_token + 1
+                start_token.saturating_add(1)
             }
         };
 
-        let start = self.token_starts[start_token as usize] as usize;
+        let Some(&start) = self.token_starts.get(start_token as usize) else {
+            return "";
+        };
+        let start = start as usize;
         let end = if (end_token as usize) < self.token_starts.len() {
             self.token_starts[end_token as usize] as usize
         } else {
             self.source.len()
         };
 
-        &self.source[start..end]
+        self.source.get(start..end).unwrap_or("")
     }
 
     /// Extract extra data as Heading
     pub fn heading_info(&self, node_index: NodeIndex) -> Heading {
-        let node = &self.nodes[node_index as usize];
-        debug_assert!(node.tag == NodeTag::Heading);
+        let Some(node) = self.node(node_index) else {
+            return Heading {
+                level: 0,
+                children_start: 0,
+                children_end: 0,
+            };
+        };
+        if node.tag != NodeTag::Heading {
+            return Heading {
+                level: 0,
+                children_start: 0,
+                children_end: 0,
+            };
+        }
         let idx = match node.data {
-            NodeData::Extra(i) => i as usize,
-            _ => panic!("heading node has wrong data type"),
+            NodeData::Extra(i) => i,
+            _ => {
+                return Heading {
+                    level: 0,
+                    children_start: 0,
+                    children_end: 0,
+                };
+            }
         };
         Heading {
-            level: self.extra_data[idx] as u8,
-            children_start: self.extra_data[idx + 1],
-            children_end: self.extra_data[idx + 2],
+            level: self.extra_u32(idx).unwrap_or(0) as u8,
+            children_start: self.extra_u32(idx.saturating_add(1)).unwrap_or(0),
+            children_end: self.extra_u32(idx.saturating_add(2)).unwrap_or(0),
         }
     }
 
     /// Extract extra data as ListItemData
     pub fn list_item_info(&self, node_index: NodeIndex) -> ListItemData {
-        let node = &self.nodes[node_index as usize];
-        debug_assert!(node.tag == NodeTag::ListItem);
-        let idx = match node.data {
-            NodeData::Extra(i) => i as usize,
-            _ => panic!("list item node has wrong data type"),
+        let Some(node) = self.node(node_index) else {
+            return ListItemData {
+                checked: None,
+                children_start: 0,
+                children_end: 0,
+            };
         };
-        let checked_raw = self.extra_data[idx];
+        if node.tag != NodeTag::ListItem {
+            return ListItemData {
+                checked: None,
+                children_start: 0,
+                children_end: 0,
+            };
+        }
+        let idx = match node.data {
+            NodeData::Extra(i) => i,
+            _ => {
+                return ListItemData {
+                    checked: None,
+                    children_start: 0,
+                    children_end: 0,
+                };
+            }
+        };
+        let checked_raw = self.extra_u32(idx).unwrap_or(0);
         let checked = match checked_raw {
             1 => Some(false),
             2 => Some(true),
@@ -375,26 +434,89 @@ impl Ast {
         };
         ListItemData {
             checked,
-            children_start: self.extra_data[idx + 1],
-            children_end: self.extra_data[idx + 2],
+            children_start: self.extra_u32(idx.saturating_add(1)).unwrap_or(0),
+            children_end: self.extra_u32(idx.saturating_add(2)).unwrap_or(0),
         }
     }
 
     /// Get JSX element details
     pub fn jsx_element(&self, node_index: NodeIndex) -> JsxElement {
-        let node = &self.nodes[node_index as usize];
-        debug_assert!(node.tag == NodeTag::MdxJsxElement || node.tag == NodeTag::MdxJsxSelfClosing);
+        let Some(node) = self.node(node_index) else {
+            return JsxElement {
+                name_token: 0,
+                attrs_start: 0,
+                attrs_end: 0,
+                children_start: 0,
+                children_end: 0,
+            };
+        };
+        if node.tag != NodeTag::MdxJsxElement && node.tag != NodeTag::MdxJsxSelfClosing {
+            return JsxElement {
+                name_token: 0,
+                attrs_start: 0,
+                attrs_end: 0,
+                children_start: 0,
+                children_end: 0,
+            };
+        }
         let idx = match node.data {
-            NodeData::Extra(i) => i as usize,
-            _ => panic!("jsx element node has wrong data type"),
+            NodeData::Extra(i) => i,
+            _ => {
+                return JsxElement {
+                    name_token: 0,
+                    attrs_start: 0,
+                    attrs_end: 0,
+                    children_start: 0,
+                    children_end: 0,
+                };
+            }
         };
         JsxElement {
-            name_token: self.extra_data[idx],
-            attrs_start: self.extra_data[idx + 1],
-            attrs_end: self.extra_data[idx + 2],
-            children_start: self.extra_data[idx + 3],
-            children_end: self.extra_data[idx + 4],
+            name_token: self.extra_u32(idx).unwrap_or(0),
+            attrs_start: self.extra_u32(idx.saturating_add(1)).unwrap_or(0),
+            attrs_end: self.extra_u32(idx.saturating_add(2)).unwrap_or(0),
+            children_start: self.extra_u32(idx.saturating_add(3)).unwrap_or(0),
+            children_end: self.extra_u32(idx.saturating_add(4)).unwrap_or(0),
         }
+    }
+
+    /// Get link/image details
+    pub fn link_info(&self, node_index: NodeIndex) -> Link {
+        let Some(node) = self.node(node_index) else {
+            return Link {
+                children_start: 0,
+                children_end: 0,
+                url_token: 0,
+            };
+        };
+        if node.tag != NodeTag::Link && node.tag != NodeTag::Image {
+            return Link {
+                children_start: 0,
+                children_end: 0,
+                url_token: 0,
+            };
+        }
+        let idx = match node.data {
+            NodeData::Extra(i) => i,
+            _ => {
+                return Link {
+                    children_start: 0,
+                    children_end: 0,
+                    url_token: 0,
+                };
+            }
+        };
+        Link {
+            children_start: self.extra_u32(idx).unwrap_or(0),
+            children_end: self.extra_u32(idx.saturating_add(1)).unwrap_or(0),
+            url_token: self.extra_u32(idx.saturating_add(2)).unwrap_or(0),
+        }
+    }
+
+    /// Get link/image child nodes
+    pub fn link_children(&self, node_index: NodeIndex) -> &[NodeIndex] {
+        let info = self.link_info(node_index);
+        self.node_index_slice(info.children_start, info.children_end)
     }
 
     /// Get JSX attributes for an element
@@ -405,8 +527,9 @@ impl Ast {
         }
 
         let mut attrs = Vec::new();
-        let mut i = elem.attrs_start as usize;
-        while i + 2 < elem.attrs_end as usize + 1 {
+        let attrs_end = (elem.attrs_end as usize).min(self.extra_data.len());
+        let mut i = (elem.attrs_start as usize).min(attrs_end);
+        while i + 2 < attrs_end {
             let name_token = self.extra_data[i];
             let value_raw = self.extra_data[i + 1];
             let type_raw = self.extra_data[i + 2];
@@ -441,8 +564,14 @@ impl Ast {
 
     /// Get the byte span for a node
     pub fn node_span(&self, node_index: NodeIndex) -> Span {
-        let node = &self.nodes[node_index as usize];
-        let start = self.token_starts[node.main_token as usize];
+        let Some(node) = self.node(node_index) else {
+            return Span { start: 0, end: 0 };
+        };
+        let start = self
+            .token_starts
+            .get(node.main_token as usize)
+            .copied()
+            .unwrap_or(self.source.len() as ByteOffset);
 
         let end = {
             let node_children = self.children(node_index);
@@ -451,7 +580,7 @@ impl Ast {
                 let child_span = self.node_span(last_child);
                 child_span.end
             } else {
-                let end_token = node.main_token + 1;
+                let end_token = node.main_token.saturating_add(1);
                 if (end_token as usize) < self.token_starts.len() {
                     self.token_starts[end_token as usize]
                 } else {
@@ -504,13 +633,31 @@ impl Ast {
 
     /// Extract frontmatter info from extra_data (3 u32s: format, content_start, content_end)
     pub fn frontmatter_info(&self, node_index: NodeIndex) -> FrontmatterData {
-        let node = &self.nodes[node_index as usize];
-        debug_assert!(node.tag == NodeTag::Frontmatter);
-        let idx = match node.data {
-            NodeData::Extra(i) => i as usize,
-            _ => panic!("frontmatter node has wrong data type"),
+        let Some(node) = self.node(node_index) else {
+            return FrontmatterData {
+                format: FrontmatterFormat::Yaml,
+                content_start: 0,
+                content_end: 0,
+            };
         };
-        let format_raw = self.extra_data[idx];
+        if node.tag != NodeTag::Frontmatter {
+            return FrontmatterData {
+                format: FrontmatterFormat::Yaml,
+                content_start: 0,
+                content_end: 0,
+            };
+        }
+        let idx = match node.data {
+            NodeData::Extra(i) => i,
+            _ => {
+                return FrontmatterData {
+                    format: FrontmatterFormat::Yaml,
+                    content_start: 0,
+                    content_end: 0,
+                };
+            }
+        };
+        let format_raw = self.extra_u32(idx).unwrap_or(0);
         let format = if format_raw == 0 {
             FrontmatterFormat::Yaml
         } else {
@@ -518,26 +665,47 @@ impl Ast {
         };
         FrontmatterData {
             format,
-            content_start: self.extra_data[idx + 1],
-            content_end: self.extra_data[idx + 2],
+            content_start: self.extra_u32(idx.saturating_add(1)).unwrap_or(0),
+            content_end: self.extra_u32(idx.saturating_add(2)).unwrap_or(0),
         }
     }
 
     /// Extract table info from extra_data
     pub fn table_info(&self, node_index: NodeIndex) -> TableData {
-        let node = &self.nodes[node_index as usize];
-        debug_assert!(node.tag == NodeTag::Table);
-        let idx = match node.data {
-            NodeData::Extra(i) => i as usize,
-            _ => panic!("table node has wrong data type"),
+        let Some(node) = self.node(node_index) else {
+            return TableData {
+                num_columns: 0,
+                num_rows: 0,
+                alignments_start: 0,
+                rows_start: 0,
+            };
         };
-        let num_columns = self.extra_data[idx];
-        let num_rows = self.extra_data[idx + 1];
+        if node.tag != NodeTag::Table {
+            return TableData {
+                num_columns: 0,
+                num_rows: 0,
+                alignments_start: 0,
+                rows_start: 0,
+            };
+        }
+        let idx = match node.data {
+            NodeData::Extra(i) => i,
+            _ => {
+                return TableData {
+                    num_columns: 0,
+                    num_rows: 0,
+                    alignments_start: 0,
+                    rows_start: 0,
+                };
+            }
+        };
+        let num_columns = self.extra_u32(idx).unwrap_or(0);
+        let num_rows = self.extra_u32(idx.saturating_add(1)).unwrap_or(0);
         TableData {
             num_columns,
             num_rows,
-            alignments_start: idx as u32 + 2,
-            rows_start: idx as u32 + 2 + num_columns,
+            alignments_start: idx.saturating_add(2),
+            rows_start: idx.saturating_add(2).saturating_add(num_columns),
         }
     }
 
@@ -546,7 +714,9 @@ impl Ast {
         let info = self.table_info(node_index);
         (0..info.num_columns)
             .map(|i| {
-                let raw = self.extra_data[(info.alignments_start + i) as usize];
+                let raw = self
+                    .extra_u32(info.alignments_start.saturating_add(i))
+                    .unwrap_or(0);
                 match raw {
                     1 => TableAlignment::Left,
                     2 => TableAlignment::Center,
@@ -560,8 +730,8 @@ impl Ast {
     /// Extract a Range from extra_data
     pub fn extra_range(&self, index: u32) -> Range {
         Range {
-            start: self.extra_data[index as usize],
-            end: self.extra_data[index as usize + 1],
+            start: self.extra_u32(index).unwrap_or(0),
+            end: self.extra_u32(index.saturating_add(1)).unwrap_or(0),
         }
     }
 }

@@ -1,5 +1,5 @@
 use hypernote_mdx::ast::{ErrorTag, NodeTag};
-use hypernote_mdx::{parse, parse_with_options, render, serialize_tree, ParseOptions};
+use hypernote_mdx::{ParseOptions, parse, parse_with_options, render, serialize_tree};
 
 #[test]
 fn shortcode_normalization_is_opt_in() {

@@ -11,6 +11,14 @@ _require-hyperfine:
     exit 1; \
   }
 
+[private]
+_require-cargo-fuzz:
+  @cargo fuzz --help >/dev/null 2>&1 || { \
+    echo "cargo-fuzz not found."; \
+    echo "Install it with: cargo install cargo-fuzz"; \
+    exit 1; \
+  }
+
 # Run the full test suite.
 test:
   cargo test
@@ -70,3 +78,18 @@ research-plot:
 # Serve the autoresearch report directory in a browser-friendly way.
 research-serve port="8765":
   cd research && python3 -m http.server {{port}}
+
+# Run the parser no-panic fuzz target against a temporary corpus copy.
+fuzz seconds="10": _require-cargo-fuzz
+  tmpdir=$(mktemp -d); \
+  trap 'rm -rf "$tmpdir"' EXIT; \
+  cp fuzz/corpus/parse_render_serialize/* "$tmpdir"/; \
+  cargo fuzz run parse_render_serialize "$tmpdir" -- -dict=fuzz/dictionaries/mdx.dict -max_total_time={{seconds}}
+
+# Run fuzzing against the checked-in corpus and let libFuzzer grow it.
+fuzz-corpus seconds="10": _require-cargo-fuzz
+  cargo fuzz run parse_render_serialize -- -dict=fuzz/dictionaries/mdx.dict -max_total_time={{seconds}}
+
+# Build the fuzz target without starting a fuzzing session.
+fuzz-build: _require-cargo-fuzz
+  cargo fuzz build parse_render_serialize

@@ -79,6 +79,7 @@ fn print_ast(ast: &hypernote_mdx::ast::Ast) {
             | NodeTag::ListUnordered
             | NodeTag::ListOrdered
             | NodeTag::ListItem
+            | NodeTag::Strikethrough
             | NodeTag::MdxJsxElement
             | NodeTag::MdxJsxFragment
             | NodeTag::TableRow
@@ -144,7 +145,7 @@ fn print_node(
         }
         NodeTag::Link | NodeTag::Image => {
             if let NodeData::Extra(idx) = node.data {
-                let url_token = ast.extra_data[idx as usize + 1];
+                let url_token = ast.extra_data[idx as usize + 2];
                 let url = ast.token_slice(url_token);
                 print!(" (url={})", url);
             }

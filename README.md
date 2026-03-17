@@ -67,6 +67,38 @@ just research-serve
 
 Open `http://localhost:8765` after starting `just research-serve` to watch the progress chart and recent experiment table in your browser.
 
+### Fuzzing
+
+A `cargo-fuzz` harness lives under [`fuzz/`](/Users/futurepaul/dev/sec/hypernote-mdx/fuzz/Cargo.toml). The first target stresses the main library path on arbitrary input:
+
+- `parse`
+- `serialize_tree`
+- `render`
+- parse/render round-trips
+- the `normalize_emoji_shortcodes` parser option
+
+Install the tool once:
+
+```sh
+cargo install cargo-fuzz
+```
+
+Then run either:
+
+```sh
+just fuzz
+```
+
+or directly:
+
+```sh
+cargo fuzz run parse_render_serialize -- -max_total_time=10
+```
+
+Starter corpus seeds live in `fuzz/corpus/parse_render_serialize/`.
+The fuzz dictionary lives in `fuzz/dictionaries/mdx.dict`, and `just fuzz` uses it by default so libFuzzer can mutate common Markdown/MDX syntax more intelligently.
+`just fuzz` runs against a temporary corpus copy so it does not churn the repo; use `just fuzz-corpus` when you intentionally want libFuzzer to grow the checked-in corpus.
+
 ## What it parses
 
 **Markdown:** headings, paragraphs, bold, italic, inline code, code blocks, links, images, blockquotes, ordered/unordered lists, horizontal rules, hard breaks.

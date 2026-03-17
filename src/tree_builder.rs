@@ -286,22 +286,21 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         }
 
         NodeTag::Link | NodeTag::Image => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-                let url = ast.token_slice(url_token);
+            let info = ast.link_info(node_idx);
+            let url = ast.token_slice(info.url_token);
 
-                output.push_str(",\"url\":");
-                write_json_string(output, url);
+            output.push_str(",\"url\":");
+            write_json_string(output, url);
 
-                if text_node_raw != u32::MAX {
-                    output.push_str(",\"children\":[");
-                    serialize_node(ast, text_node_raw, output, options);
-                    output.push(']');
-                } else {
-                    output.push_str(",\"children\":[]");
+            output.push_str(",\"children\":[");
+            let children = ast.link_children(node_idx);
+            for (i, &child_idx) in children.iter().enumerate() {
+                if i > 0 {
+                    output.push(',');
                 }
+                serialize_node(ast, child_idx, output, options);
             }
+            output.push(']');
         }
 
         NodeTag::MdxJsxElement | NodeTag::MdxJsxSelfClosing => {
@@ -554,6 +553,7 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         | NodeTag::Blockquote
         | NodeTag::Strong
         | NodeTag::Emphasis
+        | NodeTag::Strikethrough
         | NodeTag::MdxJsxFragment => {
             output.push_str(",\"children\":[");
             let children = ast.children(node_idx);
