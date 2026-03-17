@@ -64,19 +64,28 @@ fn ast_accessors_return_safe_defaults_for_invalid_indices() {
 
     let heading = ast.heading_info(999);
     assert_eq!(0, heading.level);
+    assert!(ast.code_block_info(999).is_none());
 
     let list_item = ast.list_item_info(999);
     assert_eq!(None, list_item.checked);
 
     let jsx = ast.jsx_element(999);
     assert_eq!(0, jsx.name_token);
+    assert!(ast.jsx_attribute_views(999).is_none());
 
     let link = ast.link_info(999);
     assert_eq!(0, link.url_token);
     assert!(ast.link_children(999).is_empty());
+    assert!(ast.link_view(999).is_none());
+    assert!(ast.image_view(999).is_none());
 
     let frontmatter = ast.frontmatter_info(999);
     assert_eq!(FrontmatterFormat::Yaml, frontmatter.format);
+    assert!(ast.frontmatter_view(999).is_none());
+    assert!(ast.expression_info(999).is_none());
+    assert!(ast.plain_text_parts(999).is_none());
+    assert!(ast.plain_text(999).is_none());
+    assert_eq!("", ast.plain_text_children(&[]));
 
     let table = ast.table_info(999);
     assert_eq!(0, table.num_columns);
@@ -109,6 +118,9 @@ fn malformed_ast_defaults_are_consistent() {
     let ast = malformed_ast();
 
     assert_eq!(Vec::<TableAlignment>::new(), ast.table_alignments(6));
-    assert!(ast.jsx_attributes(3).is_empty());
+    let attrs = ast.jsx_attribute_views(3).expect("JSX node should produce typed attrs");
+    assert!(attrs.is_empty());
     assert!(ast.link_children(4).is_empty());
+    assert!(ast.link_view(4).is_some());
+    assert!(ast.frontmatter_view(5).is_some());
 }

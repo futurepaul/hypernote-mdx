@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod parser;
 pub mod render;
+pub mod semantic;
 pub mod token;
 pub mod tokenizer;
 pub mod tree_builder;

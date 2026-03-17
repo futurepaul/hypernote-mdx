@@ -734,6 +734,89 @@ impl Ast {
             end: self.extra_u32(index.saturating_add(1)).unwrap_or(0),
         }
     }
+
+    /// Extract typed semantic details for a fenced code block.
+    pub fn code_block_info(&self, node_index: NodeIndex) -> Option<crate::semantic::CodeBlockInfo<'_>> {
+        crate::semantic::code_block_info(self, node_index)
+    }
+
+    /// Extract typed semantic details for a link node.
+    pub fn link_view(&self, node_index: NodeIndex) -> Option<crate::semantic::LinkInfo<'_>> {
+        crate::semantic::link_view(self, node_index)
+    }
+
+    /// Extract typed semantic details for an image node.
+    pub fn image_view(&self, node_index: NodeIndex) -> Option<crate::semantic::ImageInfo<'_>> {
+        crate::semantic::image_view(self, node_index)
+    }
+
+    /// Extract typed semantic details for an MDX expression node.
+    pub fn expression_info(&self, node_index: NodeIndex) -> Option<crate::semantic::ExpressionInfo<'_>> {
+        crate::semantic::expression_info(self, node_index)
+    }
+
+    /// Extract typed semantic details for a frontmatter node.
+    pub fn frontmatter_view(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<crate::semantic::FrontmatterInfoView<'_>> {
+        crate::semantic::frontmatter_view(self, node_index)
+    }
+
+    /// Extract typed, decoded JSX attributes for an element node.
+    pub fn jsx_attribute_views(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<Vec<crate::semantic::JsxAttributeView<'_>>> {
+        crate::semantic::jsx_attribute_views(self, node_index)
+    }
+
+    /// Extract plain-text semantic parts for a node.
+    pub fn plain_text_parts(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<Vec<crate::semantic::PlainTextPart<'_>>> {
+        crate::semantic::plain_text_parts(self, node_index)
+    }
+
+    /// Extract plain-text semantic parts for a child node slice.
+    pub fn plain_text_parts_children(
+        &self,
+        children: &[NodeIndex],
+    ) -> Vec<crate::semantic::PlainTextPart<'_>> {
+        crate::semantic::plain_text_parts_children(self, children)
+    }
+
+    /// Flatten a node to plain text using default text options.
+    pub fn plain_text(&self, node_index: NodeIndex) -> Option<String> {
+        self.plain_text_with_options(node_index, &crate::semantic::PlainTextOptions::default())
+    }
+
+    /// Flatten a node to plain text using explicit options.
+    pub fn plain_text_with_options(
+        &self,
+        node_index: NodeIndex,
+        options: &crate::semantic::PlainTextOptions<'_>,
+    ) -> Option<String> {
+        crate::semantic::plain_text_with_options(self, node_index, options)
+    }
+
+    /// Flatten a child node slice to plain text using default text options.
+    pub fn plain_text_children(&self, children: &[NodeIndex]) -> String {
+        self.plain_text_children_with_options(
+            children,
+            &crate::semantic::PlainTextOptions::default(),
+        )
+    }
+
+    /// Flatten a child node slice to plain text using explicit options.
+    pub fn plain_text_children_with_options(
+        &self,
+        children: &[NodeIndex],
+        options: &crate::semantic::PlainTextOptions<'_>,
+    ) -> String {
+        crate::semantic::plain_text_children_with_options(self, children, options)
+    }
 }
 
 #[cfg(test)]
