@@ -1,9 +1,9 @@
 use crate::ast::*;
-use std::fmt::Write;
 use crate::semantic::{
     JsxAttributeValue, code_block_info, expression_info, frontmatter_view, image_view,
-    jsx_attribute_type_name, jsx_attribute_views, link_view,
+    jsx_attribute_type_name, jsx_element_view, link_view,
 };
+use std::fmt::Write;
 
 /// Write a JSON-escaped string
 fn write_json_string(output: &mut String, s: &str) {
@@ -189,9 +189,13 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         NodeTag::Link | NodeTag::Image => {
             output.push_str(",\"url\":");
             let url = if node.tag == NodeTag::Link {
-                link_view(ast, node_idx).map(|value| value.url).unwrap_or("")
+                link_view(ast, node_idx)
+                    .map(|value| value.url)
+                    .unwrap_or("")
             } else {
-                image_view(ast, node_idx).map(|value| value.url).unwrap_or("")
+                image_view(ast, node_idx)
+                    .map(|value| value.url)
+                    .unwrap_or("")
             };
             write_json_string(output, url);
 
@@ -215,16 +219,20 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         }
 
         NodeTag::MdxJsxElement | NodeTag::MdxJsxSelfClosing => {
-            let elem = ast.jsx_element(node_idx);
-            let name_raw = ast.token_slice(elem.name_token);
-            let name = name_raw.trim();
+            let element = jsx_element_view(ast, node_idx);
 
             output.push_str(",\"name\":");
-            write_json_string(output, name);
+            write_json_string(
+                output,
+                element.as_ref().map(|value| value.name).unwrap_or(""),
+            );
 
             // Serialize attributes
             output.push_str(",\"attributes\":[");
-            let attrs = jsx_attribute_views(ast, node_idx).unwrap_or_default();
+            let attrs = element
+                .as_ref()
+                .map(|value| value.attrs.as_slice())
+                .unwrap_or(&[]);
             for (i, attr) in attrs.iter().enumerate() {
                 if i > 0 {
                     output.push(',');
@@ -272,14 +280,12 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
             output.push(']');
 
             output.push_str(",\"children\":[");
-            if node.tag == NodeTag::MdxJsxElement {
-                let children =
-                    &ast.extra_data[elem.children_start as usize..elem.children_end as usize];
-                for (i, &child_raw) in children.iter().enumerate() {
+            if let Some(children) = element.as_ref().map(|value| value.children) {
+                for (i, &child_idx) in children.iter().enumerate() {
                     if i > 0 {
                         output.push(',');
                     }
-                    serialize_node(ast, child_raw, output, options);
+                    serialize_node(ast, child_idx, output, options);
                 }
             }
             output.push(']');
@@ -288,7 +294,10 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         NodeTag::Frontmatter => {
             let info = frontmatter_view(ast, node_idx);
 
-            let format_str = match info.map(|value| value.format).unwrap_or(FrontmatterFormat::Yaml) {
+            let format_str = match info
+                .map(|value| value.format)
+                .unwrap_or(FrontmatterFormat::Yaml)
+            {
                 FrontmatterFormat::Yaml => "yaml",
                 FrontmatterFormat::Json => "json",
             };

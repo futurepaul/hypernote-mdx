@@ -251,6 +251,12 @@ pub struct Span {
     pub end: ByteOffset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
 impl Ast {
     fn node(&self, node_idx: NodeIndex) -> Option<&Node> {
         self.nodes.get(node_idx as usize)
@@ -592,6 +598,37 @@ impl Ast {
         Span { start, end }
     }
 
+    /// Convert a byte offset into a one-based line and column.
+    pub fn line_col(&self, byte_offset: ByteOffset) -> SourcePosition {
+        let mut clamped = (byte_offset as usize).min(self.source.len());
+        while clamped > 0 && !self.source.is_char_boundary(clamped) {
+            clamped -= 1;
+        }
+
+        let mut line = 1usize;
+        let mut column = 1usize;
+
+        for (idx, ch) in self.source.char_indices() {
+            if idx >= clamped {
+                break;
+            }
+
+            if ch == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+        }
+
+        SourcePosition { line, column }
+    }
+
+    /// Convert the start of a node span into a one-based line and column.
+    pub fn node_position(&self, node_index: NodeIndex) -> SourcePosition {
+        self.line_col(self.node_span(node_index).start)
+    }
+
     /// Find the deepest node containing a byte offset
     pub fn node_at_offset(&self, offset: ByteOffset) -> Option<NodeIndex> {
         if self.nodes.is_empty() {
@@ -736,7 +773,10 @@ impl Ast {
     }
 
     /// Extract typed semantic details for a fenced code block.
-    pub fn code_block_info(&self, node_index: NodeIndex) -> Option<crate::semantic::CodeBlockInfo<'_>> {
+    pub fn code_block_info(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<crate::semantic::CodeBlockInfo<'_>> {
         crate::semantic::code_block_info(self, node_index)
     }
 
@@ -751,7 +791,10 @@ impl Ast {
     }
 
     /// Extract typed semantic details for an MDX expression node.
-    pub fn expression_info(&self, node_index: NodeIndex) -> Option<crate::semantic::ExpressionInfo<'_>> {
+    pub fn expression_info(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<crate::semantic::ExpressionInfo<'_>> {
         crate::semantic::expression_info(self, node_index)
     }
 
@@ -769,6 +812,14 @@ impl Ast {
         node_index: NodeIndex,
     ) -> Option<Vec<crate::semantic::JsxAttributeView<'_>>> {
         crate::semantic::jsx_attribute_views(self, node_index)
+    }
+
+    /// Extract typed semantic details for a JSX element node.
+    pub fn jsx_element_view(
+        &self,
+        node_index: NodeIndex,
+    ) -> Option<crate::semantic::JsxElementView<'_>> {
+        crate::semantic::jsx_element_view(self, node_index)
     }
 
     /// Extract plain-text semantic parts for a node.

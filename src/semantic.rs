@@ -79,6 +79,20 @@ pub struct JsxAttributeView<'a> {
     pub value: JsxAttributeValue<'a>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsxElementKind {
+    Normal,
+    SelfClosing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxElementView<'a> {
+    pub name: &'a str,
+    pub attrs: Vec<JsxAttributeView<'a>>,
+    pub children: &'a [NodeIndex],
+    pub kind: JsxElementKind,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrontmatterInfoView<'a> {
     pub format: FrontmatterFormat,
@@ -217,7 +231,10 @@ pub(crate) fn expression_info(ast: &Ast, node_idx: NodeIndex) -> Option<Expressi
     Some(ExpressionInfo { kind, value })
 }
 
-pub(crate) fn jsx_attribute_views(ast: &Ast, node_idx: NodeIndex) -> Option<Vec<JsxAttributeView<'_>>> {
+pub(crate) fn jsx_attribute_views(
+    ast: &Ast,
+    node_idx: NodeIndex,
+) -> Option<Vec<JsxAttributeView<'_>>> {
     let node = ast.nodes.get(node_idx as usize)?;
     if node.tag != NodeTag::MdxJsxElement && node.tag != NodeTag::MdxJsxSelfClosing {
         return None;
@@ -258,14 +275,35 @@ pub(crate) fn jsx_attribute_views(ast: &Ast, node_idx: NodeIndex) -> Option<Vec<
                 ),
             };
 
-            JsxAttributeView {
-                name,
-                value,
-            }
+            JsxAttributeView { name, value }
         })
         .collect();
 
     Some(attrs)
+}
+
+pub(crate) fn jsx_element_view(ast: &Ast, node_idx: NodeIndex) -> Option<JsxElementView<'_>> {
+    let node = ast.nodes.get(node_idx as usize)?;
+    let kind = match node.tag {
+        NodeTag::MdxJsxElement => JsxElementKind::Normal,
+        NodeTag::MdxJsxSelfClosing => JsxElementKind::SelfClosing,
+        _ => return None,
+    };
+
+    let name = match node.data {
+        NodeData::Extra(_) => {
+            let elem = ast.jsx_element(node_idx);
+            ast.token_slice(elem.name_token).trim()
+        }
+        _ => "",
+    };
+
+    Some(JsxElementView {
+        name,
+        attrs: jsx_attribute_views(ast, node_idx).unwrap_or_default(),
+        children: ast.children(node_idx),
+        kind,
+    })
 }
 
 pub(crate) fn jsx_attribute_type_name(value: &JsxAttributeValue<'_>) -> &'static str {
@@ -420,7 +458,9 @@ fn collect_plain_text_parts<'a>(
             }
         }
         NodeTag::CodeBlock => {
-            let text = code_block_info(ast, node_idx).map(|info| info.code).unwrap_or("");
+            let text = code_block_info(ast, node_idx)
+                .map(|info| info.code)
+                .unwrap_or("");
             if text.is_empty() {
                 false
             } else {
@@ -446,8 +486,12 @@ fn collect_plain_text_parts<'a>(
         NodeTag::Link => {
             if let Some(info) = link_view(ast, node_idx) {
                 if !info.label_children.is_empty() {
-                    let had_children =
-                        collect_plain_text_children(ast, info.label_children, out, ChildSeparator::None);
+                    let had_children = collect_plain_text_children(
+                        ast,
+                        info.label_children,
+                        out,
+                        ChildSeparator::None,
+                    );
                     if had_children {
                         return true;
                     }
@@ -460,7 +504,9 @@ fn collect_plain_text_parts<'a>(
             false
         }
         NodeTag::Image => image_view(ast, node_idx)
-            .map(|info| collect_plain_text_children(ast, info.alt_children, out, ChildSeparator::None))
+            .map(|info| {
+                collect_plain_text_children(ast, info.alt_children, out, ChildSeparator::None)
+            })
             .unwrap_or(false),
         NodeTag::Document
         | NodeTag::Blockquote
@@ -473,9 +519,12 @@ fn collect_plain_text_parts<'a>(
         NodeTag::MdxJsxElement | NodeTag::MdxJsxFragment => {
             collect_plain_text_children_smart_jsx(ast, ast.children(node_idx), out)
         }
-        NodeTag::TableRow => {
-            collect_plain_text_children(ast, ast.children(node_idx), out, ChildSeparator::Text("\t"))
-        }
+        NodeTag::TableRow => collect_plain_text_children(
+            ast,
+            ast.children(node_idx),
+            out,
+            ChildSeparator::Text("\t"),
+        ),
         NodeTag::Heading
         | NodeTag::Paragraph
         | NodeTag::Strong
@@ -552,7 +601,11 @@ fn push_separator<'a>(out: &mut Vec<PlainTextPart<'a>>, separator: ChildSeparato
     }
 }
 
-fn jsx_child_separator(ast: &Ast, previous_child: NodeIndex, next_child: NodeIndex) -> ChildSeparator<'static> {
+fn jsx_child_separator(
+    ast: &Ast,
+    previous_child: NodeIndex,
+    next_child: NodeIndex,
+) -> ChildSeparator<'static> {
     let previous_tag = ast
         .nodes
         .get(previous_child as usize)
@@ -642,7 +695,8 @@ mod tests {
             return Some(value);
         }
 
-        value.get("children")
+        value
+            .get("children")
             .and_then(Value::as_array)
             .and_then(|children| {
                 children
@@ -670,7 +724,11 @@ mod tests {
     #[test]
     fn code_block_info_matches_serialized_tree() {
         let cases = [
-            ("```rust\nfn main() {}\n```\n", Some("rust"), "fn main() {}\n"),
+            (
+                "```rust\nfn main() {}\n```\n",
+                Some("rust"),
+                "fn main() {}\n",
+            ),
             ("```\nplain text\n```\n", None, "plain text\n"),
         ];
 
@@ -720,7 +778,11 @@ mod tests {
     #[test]
     fn frontmatter_view_matches_serialized_tree() {
         let cases = [
-            ("---\ntitle: Hello\n---\n", FrontmatterFormat::Yaml, "title: Hello"),
+            (
+                "---\ntitle: Hello\n---\n",
+                FrontmatterFormat::Yaml,
+                "title: Hello",
+            ),
             (
                 "```hnmd\n{\"title\":\"Hello\"}\n```\n",
                 FrontmatterFormat::Json,
@@ -764,8 +826,7 @@ mod tests {
 
     #[test]
     fn jsx_attribute_views_match_serialized_tree() {
-        let source =
-            "<Widget label=\"Fish &amp; Chips\" count=4 enabled visible=false expr={state.count} />";
+        let source = "<Widget label=\"Fish &amp; Chips\" count=4 enabled visible=false expr={state.count} />";
         let ast = parse(source);
         let node = first_node_by_tag(&ast, NodeTag::MdxJsxSelfClosing);
         let attrs = jsx_attribute_views(&ast, node).expect("expected JSX attribute views");

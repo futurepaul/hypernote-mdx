@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static UNIQUE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_temp_path(suffix: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -9,10 +12,12 @@ fn unique_temp_path(suffix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after epoch")
         .as_nanos();
+    let counter = UNIQUE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     path.push(format!(
-        "hypernote-mdx-{}-{}{}",
+        "hypernote-mdx-{}-{}-{}{}",
         std::process::id(),
         nanos,
+        counter,
         suffix
     ));
     path

@@ -1,5 +1,7 @@
 use hypernote_mdx::ast::{NodeIndex, NodeTag};
-use hypernote_mdx::semantic::{ExpressionKind, JsxAttributeValue, decode_html_entities, decode_jsx_string};
+use hypernote_mdx::semantic::{
+    ExpressionKind, JsxAttributeValue, JsxElementKind, decode_html_entities, decode_jsx_string,
+};
 use hypernote_mdx::{parse, serialize_tree};
 use serde_json::Value;
 
@@ -9,6 +11,21 @@ fn first_node_by_tag(ast: &hypernote_mdx::ast::Ast, tag: NodeTag) -> NodeIndex {
         .enumerate()
         .find_map(|(idx, node)| (node.tag == tag).then_some(idx as NodeIndex))
         .expect("expected node tag")
+}
+
+fn first_jsx_node_by_name(ast: &hypernote_mdx::ast::Ast, tag: NodeTag, name: &str) -> NodeIndex {
+    ast.nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            (node.tag == tag
+                && ast
+                    .jsx_element_view(idx as NodeIndex)
+                    .map(|value| value.name)
+                    == Some(name))
+            .then_some(idx as NodeIndex)
+        })
+        .expect("expected JSX node")
 }
 
 fn json_node_by_type<'a>(value: &'a Value, node_type: &str) -> &'a Value {
@@ -36,7 +53,43 @@ fn json_node_by_type_opt<'a>(value: &'a Value, node_type: &str) -> Option<&'a Va
         .find_map(|child| json_node_by_type_opt(child, node_type))
 }
 
-fn ast_child_type_names(ast: &hypernote_mdx::ast::Ast, children: &[NodeIndex]) -> Vec<&'static str> {
+fn json_jsx_node_by_name<'a>(value: &'a Value, node_type: &str, name: &str) -> &'a Value {
+    if value.get("type").and_then(Value::as_str) == Some(node_type)
+        && value.get("name").and_then(Value::as_str) == Some(name)
+    {
+        return value;
+    }
+
+    value["children"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|child| json_jsx_node_by_name_opt(child, node_type, name))
+        .unwrap_or_else(|| panic!("expected JSON node type {node_type} with name {name}"))
+}
+
+fn json_jsx_node_by_name_opt<'a>(
+    value: &'a Value,
+    node_type: &str,
+    name: &str,
+) -> Option<&'a Value> {
+    if value.get("type").and_then(Value::as_str) == Some(node_type)
+        && value.get("name").and_then(Value::as_str) == Some(name)
+    {
+        return Some(value);
+    }
+
+    value["children"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|child| json_jsx_node_by_name_opt(child, node_type, name))
+}
+
+fn ast_child_type_names(
+    ast: &hypernote_mdx::ast::Ast,
+    children: &[NodeIndex],
+) -> Vec<&'static str> {
     children
         .iter()
         .map(|&idx| ast.nodes[idx as usize].tag.name())
@@ -55,7 +108,11 @@ fn json_child_type_names(node: &Value) -> Vec<&str> {
 #[test]
 fn code_block_info_matches_serialized_tree() {
     let cases = [
-        ("```rust\nfn main() {}\n```\n", Some("rust"), "fn main() {}\n"),
+        (
+            "```rust\nfn main() {}\n```\n",
+            Some("rust"),
+            "fn main() {}\n",
+        ),
         ("```\nplain text\n```\n", None, "plain text\n"),
     ];
 
@@ -179,6 +236,43 @@ fn jsx_attribute_views_decode_values_and_match_serialized_tree() {
 }
 
 #[test]
+fn jsx_element_view_matches_serialized_tree() {
+    let source =
+        "<Card title=\"Inbox\"><Body>hello {state.count}</Body></Card>\n<Widget enabled />\n";
+    let ast = parse(source);
+    let json: Value =
+        serde_json::from_str(&serialize_tree(&ast)).expect("serialized tree should parse");
+
+    let card_node = first_jsx_node_by_name(&ast, NodeTag::MdxJsxElement, "Card");
+    let card = ast
+        .jsx_element_view(card_node)
+        .expect("expected JSX element view");
+    let card_json = json_jsx_node_by_name(&json, "mdx_jsx_element", "Card");
+
+    assert_eq!("Card", card.name);
+    assert_eq!(JsxElementKind::Normal, card.kind);
+    assert_eq!(1, card.attrs.len());
+    assert_eq!(1, card.children.len());
+    assert_eq!(
+        ast_child_type_names(&ast, card.children),
+        json_child_type_names(card_json)
+    );
+    assert_eq!(card.name, card_json["name"].as_str().unwrap_or(""));
+
+    let widget_node = first_jsx_node_by_name(&ast, NodeTag::MdxJsxSelfClosing, "Widget");
+    let widget = ast
+        .jsx_element_view(widget_node)
+        .expect("expected self-closing JSX element view");
+    let widget_json = json_jsx_node_by_name(&json, "mdx_jsx_self_closing", "Widget");
+
+    assert_eq!("Widget", widget.name);
+    assert_eq!(JsxElementKind::SelfClosing, widget.kind);
+    assert_eq!(1, widget.attrs.len());
+    assert!(widget.children.is_empty());
+    assert_eq!(widget.name, widget_json["name"].as_str().unwrap_or(""));
+}
+
+#[test]
 fn semantic_accessors_return_none_on_wrong_node() {
     let ast = parse("# Heading\n");
     let heading = first_node_by_tag(&ast, NodeTag::Heading);
@@ -189,6 +283,7 @@ fn semantic_accessors_return_none_on_wrong_node() {
     assert!(ast.expression_info(heading).is_none());
     assert!(ast.frontmatter_view(heading).is_none());
     assert!(ast.jsx_attribute_views(heading).is_none());
+    assert!(ast.jsx_element_view(heading).is_none());
 }
 
 #[test]
