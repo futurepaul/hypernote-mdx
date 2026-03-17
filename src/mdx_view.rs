@@ -9,6 +9,7 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const ITALIC: &str = "\x1b[3m";
+const STRIKETHROUGH: &str = "\x1b[9m";
 const UNDERLINE: &str = "\x1b[4m";
 const REVERSE: &str = "\x1b[7m";
 const BRIGHT_WHITE: &str = "\x1b[97m";
@@ -80,9 +81,7 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
                 FrontmatterFormat::Yaml => "YAML",
                 FrontmatterFormat::Json => "JSON",
             };
-            output.push_str(&format!(
-                "{DIM}--- {fmt_label} frontmatter ---{RESET}\n"
-            ));
+            output.push_str(&format!("{DIM}--- {fmt_label} frontmatter ---{RESET}\n"));
             output.push_str(&format!("{DIM}{}{RESET}\n", content.trim()));
             output.push_str(&format!("{DIM}---{RESET}\n"));
         }
@@ -132,9 +131,7 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
         }
 
         NodeTag::Hr => {
-            output.push_str(&format!(
-                "{DIM}────────────────────────────────{RESET}\n"
-            ));
+            output.push_str(&format!("{DIM}────────────────────────────────{RESET}\n"));
         }
 
         NodeTag::ListUnordered => {
@@ -229,6 +226,15 @@ fn render_inline(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
             output.push_str(RESET);
         }
 
+        NodeTag::Strikethrough => {
+            output.push_str(STRIKETHROUGH);
+            let children = ast.children(node_idx);
+            for &child_idx in children {
+                render_inline(ast, child_idx, output);
+            }
+            output.push_str(RESET);
+        }
+
         NodeTag::CodeInline => {
             output.push_str(REVERSE);
             if let NodeData::Token(content_token) = node.data {
@@ -239,31 +245,25 @@ fn render_inline(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
         }
 
         NodeTag::Link => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-                let url = ast.token_slice(url_token);
+            let info = ast.link_info(node_idx);
+            let url = ast.token_slice(info.url_token);
 
-                output.push_str(&format!("{BLUE}{UNDERLINE}"));
-                if text_node_raw != u32::MAX {
-                    render_inline(ast, text_node_raw, output);
-                }
-                output.push_str(&format!("{RESET} {DIM}({url}){RESET}"));
+            output.push_str(&format!("{BLUE}{UNDERLINE}"));
+            for &child_idx in ast.link_children(node_idx) {
+                render_inline(ast, child_idx, output);
             }
+            output.push_str(&format!("{RESET} {DIM}({url}){RESET}"));
         }
 
         NodeTag::Image => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-                let url = ast.token_slice(url_token);
+            let info = ast.link_info(node_idx);
+            let url = ast.token_slice(info.url_token);
 
-                output.push_str(&format!("{MAGENTA}[img: "));
-                if text_node_raw != u32::MAX {
-                    render_inline(ast, text_node_raw, output);
-                }
-                output.push_str(&format!("]{RESET} {DIM}({url}){RESET}"));
+            output.push_str(&format!("{MAGENTA}[img: "));
+            for &child_idx in ast.link_children(node_idx) {
+                render_inline(ast, child_idx, output);
             }
+            output.push_str(&format!("]{RESET} {DIM}({url}){RESET}"));
         }
 
         NodeTag::HardBreak => {
@@ -471,7 +471,7 @@ fn render_inline_plain(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
             let text = ast.token_slice(node.main_token);
             output.push_str(text);
         }
-        NodeTag::Strong | NodeTag::Emphasis => {
+        NodeTag::Strong | NodeTag::Emphasis | NodeTag::Strikethrough => {
             let children = ast.children(node_idx);
             for &child_idx in children {
                 render_inline_plain(ast, child_idx, output);
@@ -484,11 +484,8 @@ fn render_inline_plain(ast: &Ast, node_idx: NodeIndex, output: &mut String) {
             }
         }
         NodeTag::Link => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                if text_node_raw != u32::MAX {
-                    render_inline_plain(ast, text_node_raw, output);
-                }
+            for &child_idx in ast.link_children(node_idx) {
+                render_inline_plain(ast, child_idx, output);
             }
         }
         _ => {

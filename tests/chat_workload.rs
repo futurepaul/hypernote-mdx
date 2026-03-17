@@ -39,9 +39,7 @@ fn tiny_message_follow_up(i: usize) -> String {
 }
 
 fn tiny_message_link(i: usize) -> String {
-    format!(
-        "can someone review [ticket-{i}](https://example.com/tickets/{i}) before standup?\n"
-    )
+    format!("can someone review [ticket-{i}](https://example.com/tickets/{i}) before standup?\n")
 }
 
 fn tiny_message_checklist(i: usize) -> String {
@@ -134,7 +132,10 @@ fn parse_then_serialize_chat_corpus_many_times() {
         let root: serde_json::Value =
             serde_json::from_str(&json).expect("chat workload JSON should be valid");
         assert_eq!("root", root["type"]);
-        assert!(root["children"].is_array(), "root children should be an array");
+        assert!(
+            root["children"].is_array(),
+            "root children should be an array"
+        );
         assert!(root["errors"].is_array(), "root errors should be an array");
 
         if json.contains("\"submit_button\"") || json.contains("SubmitButton") {
@@ -144,7 +145,10 @@ fn parse_then_serialize_chat_corpus_many_times() {
     }
 
     assert_eq!(corpus.len(), validated_json);
-    assert!(corpus_submit_actions > 0, "workload should include hypernote actions");
+    assert!(
+        corpus_submit_actions > 0,
+        "workload should include hypernote actions"
+    );
 
     let rounds = 64usize;
     let mut total_messages = 0usize;

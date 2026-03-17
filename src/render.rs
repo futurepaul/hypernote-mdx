@@ -85,6 +85,7 @@ fn can_render_all_jsx_children_inline(ast: &Ast, children: &[NodeIndex]) -> bool
             NodeTag::Text
                 | NodeTag::Strong
                 | NodeTag::Emphasis
+                | NodeTag::Strikethrough
                 | NodeTag::CodeInline
                 | NodeTag::Link
                 | NodeTag::Image
@@ -94,20 +95,47 @@ fn can_render_all_jsx_children_inline(ast: &Ast, children: &[NodeIndex]) -> bool
     })
 }
 
-/// Check if a node is a "content block" that should have blank lines between siblings
-fn is_content_block(tag: NodeTag) -> bool {
+fn is_inline_jsx_child(tag: NodeTag) -> bool {
     matches!(
         tag,
-        NodeTag::MdxTextExpression
-            | NodeTag::MdxFlowExpression
-            | NodeTag::Paragraph
-            | NodeTag::Heading
-            | NodeTag::CodeBlock
-            | NodeTag::Blockquote
-            | NodeTag::ListUnordered
-            | NodeTag::ListOrdered
-            | NodeTag::Table
+        NodeTag::Text
+            | NodeTag::Strong
+            | NodeTag::Emphasis
+            | NodeTag::Strikethrough
+            | NodeTag::CodeInline
+            | NodeTag::Link
+            | NodeTag::Image
+            | NodeTag::MdxTextExpression
+            | NodeTag::HardBreak
     )
+}
+
+fn flush_jsx_inline_run(
+    ast: &Ast,
+    output: &mut String,
+    ctx: &RenderContext,
+    run: &mut Vec<NodeIndex>,
+    wrote_child: bool,
+) -> bool {
+    if run.is_empty() {
+        return wrote_child;
+    }
+
+    if wrote_child {
+        output.push('\n');
+        output.push('\n');
+    }
+
+    let child_ctx = RenderContext {
+        indent_level: 0,
+        in_jsx: true,
+        ..*ctx
+    };
+    for &inline_idx in run.iter() {
+        render_node(ast, inline_idx, output, &child_ctx);
+    }
+    run.clear();
+    true
 }
 
 fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &RenderContext) {
@@ -208,6 +236,15 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
             output.push('*');
         }
 
+        NodeTag::Strikethrough => {
+            output.push_str("~~");
+            let children = ast.children(node_idx);
+            for &child_idx in children {
+                render_node(ast, child_idx, output, ctx);
+            }
+            output.push_str("~~");
+        }
+
         NodeTag::CodeInline => {
             output.push('`');
             if let NodeData::Token(content_token) = node.data {
@@ -243,11 +280,33 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
 
         NodeTag::Blockquote => {
             let children = ast.children(node_idx);
-            for &child_idx in children {
-                output.push_str("> ");
-                render_node(ast, child_idx, output, ctx);
+            for (i, &child_idx) in children.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(">\n");
+                }
+
+                let mut child_output = String::new();
+                let child_ctx = RenderContext {
+                    in_jsx: true,
+                    ..*ctx
+                };
+                render_node(ast, child_idx, &mut child_output, &child_ctx);
+
+                let trimmed = child_output.trim_end_matches('\n');
+                if trimmed.is_empty() {
+                    output.push_str(">\n");
+                    continue;
+                }
+
+                for line in trimmed.split('\n') {
+                    output.push('>');
+                    if !line.is_empty() {
+                        output.push(' ');
+                        output.push_str(line);
+                    }
+                    output.push('\n');
+                }
             }
-            output.push('\n');
         }
 
         NodeTag::ListUnordered => {
@@ -288,9 +347,14 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                 output.push_str(if checked { "[x] " } else { "[ ] " });
             }
             let children = ast.children(node_idx);
-            for &child_idx in children {
+            for (i, &child_idx) in children.iter().enumerate() {
                 let child = &ast.nodes[child_idx as usize];
                 if child.tag == NodeTag::Paragraph {
+                    if i > 0 {
+                        output.push('\n');
+                        output.push('\n');
+                        write_indent(output, ctx.indent_level + 1);
+                    }
                     let para_children = ast.children(child_idx);
                     for &para_child_idx in para_children {
                         render_node(ast, para_child_idx, output, ctx);
@@ -311,35 +375,27 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
         }
 
         NodeTag::Link => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-
-                output.push('[');
-                if text_node_raw != u32::MAX {
-                    render_node(ast, text_node_raw, output, ctx);
-                }
-                output.push_str("](");
-                let url = ast.token_slice(url_token);
-                output.push_str(url);
-                output.push(')');
+            let info = ast.link_info(node_idx);
+            output.push('[');
+            for &child_idx in ast.link_children(node_idx) {
+                render_node(ast, child_idx, output, ctx);
             }
+            output.push_str("](");
+            let url = ast.token_slice(info.url_token);
+            output.push_str(url);
+            output.push(')');
         }
 
         NodeTag::Image => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-
-                output.push_str("![");
-                if text_node_raw != u32::MAX {
-                    render_node(ast, text_node_raw, output, ctx);
-                }
-                output.push_str("](");
-                let url = ast.token_slice(url_token);
-                output.push_str(url);
-                output.push(')');
+            let info = ast.link_info(node_idx);
+            output.push_str("![");
+            for &child_idx in ast.link_children(node_idx) {
+                render_node(ast, child_idx, output, ctx);
             }
+            output.push_str("](");
+            let url = ast.token_slice(info.url_token);
+            output.push_str(url);
+            output.push(')');
         }
 
         NodeTag::MdxTextExpression => {
@@ -391,33 +447,46 @@ fn render_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, ctx: &Render
                 }
             } else {
                 output.push('\n');
-                let mut prev_was_content_block = false;
-                for (i, &child_idx) in children_as_nodes.iter().enumerate() {
-                    let child = &ast.nodes[child_idx as usize];
-                    let is_content = is_content_block(child.tag);
+                let mut wrote_child = false;
+                let mut inline_run: Vec<NodeIndex> = Vec::new();
 
-                    if prev_was_content_block && is_content {
+                for &child_idx in &children_as_nodes {
+                    let child = &ast.nodes[child_idx as usize];
+                    if is_inline_jsx_child(child.tag) {
+                        inline_run.push(child_idx);
+                        continue;
+                    }
+
+                    wrote_child =
+                        flush_jsx_inline_run(ast, output, ctx, &mut inline_run, wrote_child);
+
+                    if wrote_child {
+                        output.push('\n');
                         output.push('\n');
                     }
 
                     let child_ctx = RenderContext {
-                        indent_level: ctx.indent_level + 1,
+                        indent_level: if matches!(
+                            child.tag,
+                            NodeTag::MdxJsxElement
+                                | NodeTag::MdxJsxSelfClosing
+                                | NodeTag::MdxJsxFragment
+                        ) {
+                            ctx.indent_level + 1
+                        } else {
+                            0
+                        },
                         in_jsx: true,
                         ..*ctx
                     };
-                    render_node(ast, child_idx, output, &child_ctx);
-
-                    let next_is_hard_break = if i + 1 < children_as_nodes.len() {
-                        ast.nodes[children_as_nodes[i + 1] as usize].tag == NodeTag::HardBreak
-                    } else {
-                        false
-                    };
-
-                    if child.tag != NodeTag::HardBreak && !next_is_hard_break {
-                        output.push('\n');
-                    }
-                    prev_was_content_block = is_content;
+                    let mut child_output = String::new();
+                    render_node(ast, child_idx, &mut child_output, &child_ctx);
+                    output.push_str(child_output.trim_end_matches('\n'));
+                    wrote_child = true;
                 }
+
+                let _ = flush_jsx_inline_run(ast, output, ctx, &mut inline_run, wrote_child);
+                output.push('\n');
                 write_indent(output, ctx.indent_level);
             }
 

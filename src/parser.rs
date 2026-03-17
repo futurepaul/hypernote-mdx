@@ -253,7 +253,8 @@ impl Parser {
 
     fn add_extra_link(&mut self, link: &Link) -> u32 {
         let start = self.extra_data.len() as u32;
-        self.extra_data.push(link.text_node.unwrap_or(u32::MAX));
+        self.extra_data.push(link.children_start);
+        self.extra_data.push(link.children_end);
         self.extra_data.push(link.url_token);
         start
     }
@@ -288,6 +289,23 @@ impl Parser {
             start,
             end: self.extra_data.len() as u32,
         }
+    }
+
+    fn range_to_nodes(&self, range: Range) -> Vec<NodeIndex> {
+        self.extra_data[range.start as usize..range.end as usize].to_vec()
+    }
+
+    fn add_paragraph_node(
+        &mut self,
+        main_token: TokenIndex,
+        children: Vec<NodeIndex>,
+    ) -> NodeIndex {
+        let span = self.list_to_span(&children);
+        self.add_node(Node {
+            tag: NodeTag::Paragraph,
+            main_token,
+            data: NodeData::Children(span),
+        })
     }
 
     // === Error handling ===
@@ -556,11 +574,24 @@ impl Parser {
             }
         }
 
-        self.eat_token(end_tag);
+        if self.current_tag() == end_tag {
+            self.eat_token(end_tag);
+        } else if Self::requires_closing_inline_delimiter(end_tag) {
+            self.warn(ErrorTag::ExpectedToken);
+            self.scratch.truncate(scratch_top);
+            return Err(ParseError::ParseError);
+        }
 
         let children: Vec<NodeIndex> = self.scratch[scratch_top..].to_vec();
         self.scratch.truncate(scratch_top);
         Ok(self.list_to_span(&children))
+    }
+
+    fn requires_closing_inline_delimiter(end_tag: TokenTag) -> bool {
+        matches!(
+            end_tag,
+            TokenTag::StrongEnd | TokenTag::EmphasisEnd | TokenTag::StrikethroughEnd
+        )
     }
 
     fn parse_inline(&mut self) -> PResult<NodeIndex> {
@@ -568,6 +599,7 @@ impl Parser {
             TokenTag::Text | TokenTag::Indent | TokenTag::Space => self.parse_text(),
             TokenTag::StrongStart => self.parse_strong(),
             TokenTag::EmphasisStart => self.parse_emphasis(),
+            TokenTag::StrikethroughStart => self.parse_strikethrough(),
             TokenTag::CodeInlineStart => self.parse_code_inline(),
             TokenTag::LinkStart => self.parse_link(),
             TokenTag::ImageStart => self.parse_image(),
@@ -658,6 +690,35 @@ impl Parser {
         ))
     }
 
+    fn parse_strikethrough(&mut self) -> PResult<NodeIndex> {
+        let start_token = self.next_token();
+        let node_index = self.reserve_node(NodeTag::Strikethrough);
+
+        let children_span = match self.parse_inline_content(TokenTag::StrikethroughEnd) {
+            Ok(span) => span,
+            Err(e) => {
+                self.set_node(
+                    node_index,
+                    Node {
+                        tag: NodeTag::Strikethrough,
+                        main_token: start_token,
+                        data: NodeData::Children(Range { start: 0, end: 0 }),
+                    },
+                );
+                return Err(e);
+            }
+        };
+
+        Ok(self.set_node(
+            node_index,
+            Node {
+                tag: NodeTag::Strikethrough,
+                main_token: start_token,
+                data: NodeData::Children(children_span),
+            },
+        ))
+    }
+
     fn parse_code_inline(&mut self) -> PResult<NodeIndex> {
         let start_token = self.next_token(); // `
         self.expect_token(TokenTag::Text)?; // code content
@@ -672,20 +733,14 @@ impl Parser {
 
     fn parse_link(&mut self) -> PResult<NodeIndex> {
         let start_token = self.next_token(); // [
-
-        let text_node = if self.current_tag() == TokenTag::Text {
-            Some(self.parse_text()?)
-        } else {
-            None
-        };
-
-        self.expect_token(TokenTag::LinkEnd)?; // ]
+        let label_span = self.parse_inline_content(TokenTag::LinkEnd)?;
         self.expect_token(TokenTag::LinkUrlStart)?; // (
         let url_token = self.expect_token(TokenTag::Text)?;
         self.expect_token(TokenTag::LinkUrlEnd)?; // )
 
         let link_data = self.add_extra_link(&Link {
-            text_node,
+            children_start: label_span.start,
+            children_end: label_span.end,
             url_token,
         });
 
@@ -698,20 +753,14 @@ impl Parser {
 
     fn parse_image(&mut self) -> PResult<NodeIndex> {
         let start_token = self.next_token(); // ![
-
-        let text_node = if self.current_tag() == TokenTag::Text {
-            Some(self.parse_text()?)
-        } else {
-            None
-        };
-
-        self.expect_token(TokenTag::LinkEnd)?; // ]
+        let label_span = self.parse_inline_content(TokenTag::LinkEnd)?;
         self.expect_token(TokenTag::LinkUrlStart)?; // (
         let url_token = self.expect_token(TokenTag::Text)?;
         self.expect_token(TokenTag::LinkUrlEnd)?; // )
 
         let link_data = self.add_extra_link(&Link {
-            text_node,
+            children_start: label_span.start,
+            children_end: label_span.end,
             url_token,
         });
 
@@ -753,26 +802,62 @@ impl Parser {
     }
 
     fn parse_blockquote(&mut self) -> PResult<NodeIndex> {
-        let start_token = self.next_token(); // >
+        let start_token = self.token_index;
         let node_index = self.reserve_node(NodeTag::Blockquote);
+        let mut block_children = Vec::new();
 
-        // Skip space after >
-        self.eat_token(TokenTag::Space);
+        while self.current_tag() == TokenTag::BlockquoteStart {
+            let quote_token = self.next_token();
+            let mut paragraph_children = Vec::new();
+            let mut saw_content = false;
 
-        let children_span = match self.parse_inline_content(TokenTag::Newline) {
-            Ok(span) => span,
-            Err(e) => {
-                self.set_node(
-                    node_index,
-                    Node {
-                        tag: NodeTag::Blockquote,
-                        main_token: start_token,
-                        data: NodeData::Children(Range { start: 0, end: 0 }),
-                    },
-                );
-                return Err(e);
+            loop {
+                if self.current_tag() == TokenTag::Space {
+                    self.next_token();
+                }
+
+                if self.current_tag() == TokenTag::Newline {
+                    self.next_token();
+                    break;
+                }
+
+                let line_children = match self.parse_inline_content(TokenTag::Newline) {
+                    Ok(span) => self.range_to_nodes(span),
+                    Err(e) => {
+                        self.set_node(
+                            node_index,
+                            Node {
+                                tag: NodeTag::Blockquote,
+                                main_token: start_token,
+                                data: NodeData::Children(Range { start: 0, end: 0 }),
+                            },
+                        );
+                        return Err(e);
+                    }
+                };
+
+                if !line_children.is_empty() {
+                    saw_content = true;
+                    paragraph_children.extend(line_children);
+                }
+
+                if self.current_tag() != TokenTag::BlockquoteStart {
+                    break;
+                }
+
+                let before_next_line = self.peek_token(1);
+                if before_next_line == TokenTag::Newline {
+                    break;
+                }
+                self.next_token();
             }
-        };
+
+            if saw_content {
+                block_children.push(self.add_paragraph_node(quote_token, paragraph_children));
+            }
+        }
+
+        let children_span = self.list_to_span(&block_children);
 
         Ok(self.set_node(
             node_index,
@@ -846,7 +931,7 @@ impl Parser {
             None
         };
 
-        let children_span = match self.parse_inline_content(TokenTag::Newline) {
+        let first_line_span = match self.parse_inline_content(TokenTag::Newline) {
             Ok(span) => span,
             Err(e) => {
                 let extra_idx = self.add_extra_list_item(&ListItemData {
@@ -866,6 +951,48 @@ impl Parser {
             }
         };
 
+        let first_line_children = self.range_to_nodes(first_line_span);
+        let has_continuation = self.current_tag() == TokenTag::BlankLine;
+
+        let children_span = if has_continuation {
+            let mut block_children = Vec::new();
+            block_children.push(self.add_paragraph_node(item_token, first_line_children));
+
+            while self.current_tag() == TokenTag::BlankLine {
+                self.next_token();
+
+                if self.current_tag() != TokenTag::Indent {
+                    break;
+                }
+
+                let continuation_children = match self.parse_list_item_paragraph() {
+                    Ok(children) => children,
+                    Err(e) => {
+                        let extra_idx = self.add_extra_list_item(&ListItemData {
+                            checked,
+                            children_start: 0,
+                            children_end: 0,
+                        });
+                        self.set_node(
+                            node_index,
+                            Node {
+                                tag: NodeTag::ListItem,
+                                main_token: item_token,
+                                data: NodeData::Extra(extra_idx),
+                            },
+                        );
+                        return Err(e);
+                    }
+                };
+
+                block_children.push(self.add_paragraph_node(item_token, continuation_children));
+            }
+
+            self.list_to_span(&block_children)
+        } else {
+            first_line_span
+        };
+
         let extra_idx = self.add_extra_list_item(&ListItemData {
             checked,
             children_start: children_span.start,
@@ -880,6 +1007,23 @@ impl Parser {
                 data: NodeData::Extra(extra_idx),
             },
         ))
+    }
+
+    fn parse_list_item_paragraph(&mut self) -> PResult<Vec<NodeIndex>> {
+        let mut paragraph_children = Vec::new();
+
+        while self.current_tag() == TokenTag::Indent {
+            self.next_token();
+
+            let line_children = self.parse_inline_content(TokenTag::Newline)?;
+            paragraph_children.extend(self.range_to_nodes(line_children));
+
+            if self.current_tag() != TokenTag::Indent {
+                break;
+            }
+        }
+
+        Ok(paragraph_children)
     }
 
     fn parse_table(&mut self) -> PResult<NodeIndex> {
@@ -1210,6 +1354,16 @@ impl Parser {
                     let child = self.parse_block()?;
                     self.scratch.push(child);
                 }
+                TokenTag::HeadingStart
+                | TokenTag::CodeFenceStart
+                | TokenTag::Hr
+                | TokenTag::BlockquoteStart
+                | TokenTag::ListItemUnordered
+                | TokenTag::ListItemOrdered
+                | TokenTag::Pipe => {
+                    let child = self.parse_block()?;
+                    self.scratch.push(child);
+                }
                 TokenTag::ExprStart => {
                     let child = self.parse_text_expression()?;
                     self.scratch.push(child);
@@ -1250,6 +1404,10 @@ impl Parser {
                     let child = self.parse_emphasis()?;
                     self.scratch.push(child);
                 }
+                TokenTag::StrikethroughStart => {
+                    let child = self.parse_strikethrough()?;
+                    self.scratch.push(child);
+                }
                 TokenTag::LinkStart => {
                     let child = self.parse_link()?;
                     self.scratch.push(child);
@@ -1260,10 +1418,6 @@ impl Parser {
                 }
                 TokenTag::HardBreak => {
                     let child = self.parse_hard_break()?;
-                    self.scratch.push(child);
-                }
-                TokenTag::HeadingStart => {
-                    let child = self.parse_heading()?;
                     self.scratch.push(child);
                 }
                 TokenTag::Newline | TokenTag::BlankLine => {

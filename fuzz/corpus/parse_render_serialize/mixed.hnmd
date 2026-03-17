@@ -1,0 +1,11 @@
+---
+title: Mixed
+---
+
+<Card title="Status">
+Before {status.label}
+
+> quoted
+
+- [x] done
+</Card>

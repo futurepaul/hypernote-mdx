@@ -71,7 +71,8 @@ fn markdown_ast_snapshot_is_stable() {
 
 #[test]
 fn jsx_ast_snapshot_is_stable() {
-    let source = "<Widget count=4 enabled label=\"Fish &amp; Chips\" expr={state.count}>Hi 👋</Widget>\n";
+    let source =
+        "<Widget count=4 enabled label=\"Fish &amp; Chips\" expr={state.count}>Hi 👋</Widget>\n";
 
     let actual = serialized(source);
     let expected = json!({

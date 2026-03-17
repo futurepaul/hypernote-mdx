@@ -1,6 +1,9 @@
 use crate::ast::*;
-use crate::token::Tag as TokenTag;
 use std::fmt::Write;
+use crate::semantic::{
+    JsxAttributeValue, code_block_info, expression_info, frontmatter_view, image_view,
+    jsx_attribute_type_name, jsx_attribute_views, link_view,
+};
 
 /// Write a JSON-escaped string
 fn write_json_string(output: &mut String, s: &str) {
@@ -49,60 +52,6 @@ fn write_json_string(output: &mut String, s: &str) {
 fn estimated_serialized_capacity(ast: &Ast) -> usize {
     ast.source.len() + ast.nodes.len() * 48 + ast.errors.len() * 64 + 128
 }
-
-fn decode_html_entities(value: &str) -> String {
-    value
-        .replace("&quot;", "\"")
-        .replace("&gt;", ">")
-        .replace("&lt;", "<")
-        .replace("&amp;", "&")
-}
-
-fn decode_jsx_quoted_value(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let inner = if trimmed.len() >= 2
-        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
-    {
-        &trimmed[1..trimmed.len() - 1]
-    } else {
-        trimmed
-    };
-
-    let mut output = String::with_capacity(inner.len());
-    let mut escaped = false;
-    for ch in inner.chars() {
-        if escaped {
-            match ch {
-                'n' => output.push('\n'),
-                'r' => output.push('\r'),
-                't' => output.push('\t'),
-                '\\' => output.push('\\'),
-                '"' => output.push('"'),
-                '\'' => output.push('\''),
-                other => {
-                    output.push('\\');
-                    output.push(other);
-                }
-            }
-            escaped = false;
-            continue;
-        }
-
-        if ch == '\\' {
-            escaped = true;
-        } else {
-            output.push(ch);
-        }
-    }
-
-    if escaped {
-        output.push('\\');
-    }
-
-    decode_html_entities(&output)
-}
-
 pub struct SerializeOptions {
     pub include_positions: bool,
 }
@@ -217,64 +166,16 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         }
 
         NodeTag::CodeBlock => {
-            let fence_token = node.main_token;
-
-            // Check if there's a language token after the fence
-            let mut lang: Option<&str> = None;
-            if fence_token + 1 < ast.token_tags.len() as u32 {
-                let next_token = fence_token + 1;
-                if ast.token_tags[next_token as usize] == TokenTag::Text {
-                    let lang_text = ast.token_slice(next_token);
-                    let trimmed = lang_text.trim();
-                    if !trimmed.is_empty() {
-                        lang = Some(trimmed);
-                    }
-                }
-            }
-
+            let info = code_block_info(ast, node_idx);
             output.push_str(",\"lang\":");
-            if let Some(l) = lang {
+            if let Some(l) = info.and_then(|value| value.lang) {
                 write_json_string(output, l);
             } else {
                 output.push_str("null");
             }
 
-            // Get the code content
-            let mut code_start: u32 = u32::MAX;
-            let mut code_end: u32 = 0;
-            let mut in_code = false;
-
-            let mut i = fence_token;
-            while (i as usize) < ast.token_tags.len() {
-                if ast.token_tags[i as usize] == TokenTag::CodeFenceEnd {
-                    break;
-                }
-                if ast.token_tags[i as usize] == TokenTag::Newline && !in_code {
-                    in_code = true;
-                    i += 1;
-                    continue;
-                }
-                if in_code {
-                    let start = ast.token_starts[i as usize];
-                    let end = if (i as usize + 1) < ast.token_starts.len() {
-                        ast.token_starts[i as usize + 1]
-                    } else {
-                        ast.source.len() as u32
-                    };
-                    code_start = code_start.min(start);
-                    code_end = code_end.max(end);
-                }
-                i += 1;
-            }
-
-            let code = if code_start < code_end {
-                &ast.source[code_start as usize..code_end as usize]
-            } else {
-                ""
-            };
-
             output.push_str(",\"value\":");
-            write_json_string(output, code);
+            write_json_string(output, info.map(|value| value.code).unwrap_or(""));
         }
 
         NodeTag::CodeInline => {
@@ -286,22 +187,31 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         }
 
         NodeTag::Link | NodeTag::Image => {
-            if let NodeData::Extra(idx) = node.data {
-                let text_node_raw = ast.extra_data[idx as usize];
-                let url_token = ast.extra_data[idx as usize + 1];
-                let url = ast.token_slice(url_token);
+            output.push_str(",\"url\":");
+            let url = if node.tag == NodeTag::Link {
+                link_view(ast, node_idx).map(|value| value.url).unwrap_or("")
+            } else {
+                image_view(ast, node_idx).map(|value| value.url).unwrap_or("")
+            };
+            write_json_string(output, url);
 
-                output.push_str(",\"url\":");
-                write_json_string(output, url);
-
-                if text_node_raw != u32::MAX {
-                    output.push_str(",\"children\":[");
-                    serialize_node(ast, text_node_raw, output, options);
-                    output.push(']');
-                } else {
-                    output.push_str(",\"children\":[]");
+            output.push_str(",\"children\":[");
+            let children = if node.tag == NodeTag::Link {
+                link_view(ast, node_idx)
+                    .map(|value| value.label_children)
+                    .unwrap_or(&[])
+            } else {
+                image_view(ast, node_idx)
+                    .map(|value| value.alt_children)
+                    .unwrap_or(&[])
+            };
+            for (i, &child_idx) in children.iter().enumerate() {
+                if i > 0 {
+                    output.push(',');
                 }
+                serialize_node(ast, child_idx, output, options);
             }
+            output.push(']');
         }
 
         NodeTag::MdxJsxElement | NodeTag::MdxJsxSelfClosing => {
@@ -314,24 +224,17 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
 
             // Serialize attributes
             output.push_str(",\"attributes\":[");
-            let attrs = ast.jsx_attributes(node_idx);
+            let attrs = jsx_attribute_views(ast, node_idx).unwrap_or_default();
             for (i, attr) in attrs.iter().enumerate() {
                 if i > 0 {
                     output.push(',');
                 }
                 output.push('{');
 
-                let attr_name_raw = ast.token_slice(attr.name_token);
-                let attr_name = attr_name_raw.trim();
                 output.push_str("\"name\":");
-                write_json_string(output, attr_name);
+                write_json_string(output, attr.name);
 
-                let value_type = match attr.value_type {
-                    JsxAttributeType::String => "string",
-                    JsxAttributeType::Number => "number",
-                    JsxAttributeType::Boolean => "boolean",
-                    JsxAttributeType::Expression => "expression",
-                };
+                let value_type = jsx_attribute_type_name(&attr.value);
                 output.push_str(",\"value_type\":\"");
                 output.push_str(value_type);
                 output.push('"');
@@ -341,47 +244,26 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
                 output.push_str(value_type);
                 output.push('"');
 
-                match attr.value_type {
-                    JsxAttributeType::String => {
-                        let value = if let Some(val_tok) = attr.value_token {
-                            decode_jsx_quoted_value(ast.token_slice(val_tok))
-                        } else {
-                            String::new()
-                        };
+                match &attr.value {
+                    JsxAttributeValue::String(value) => {
                         output.push_str(",\"value\":");
-                        write_json_string(output, &value);
+                        write_json_string(output, value);
                     }
-                    JsxAttributeType::Number => {
+                    JsxAttributeValue::Number(value) => {
                         output.push_str(",\"value\":");
-                        if let Some(val_tok) = attr.value_token {
-                            let raw = ast.token_slice(val_tok).trim();
-                            if let Ok(parsed) = raw.parse::<f64>() {
-                                write!(output, "{}", parsed)
-                                    .expect("writing numeric JSX attribute into a String cannot fail");
-                            } else {
-                                write_json_string(output, raw);
-                            }
-                        } else {
-                            output.push('0');
-                        }
+                        output.push_str(&value.to_string());
                     }
-                    JsxAttributeType::Boolean => {
-                        let bool_value = if let Some(val_tok) = attr.value_token {
-                            ast.token_slice(val_tok).trim() == "true"
-                        } else {
-                            true
-                        };
+                    JsxAttributeValue::InvalidNumber(value) => {
                         output.push_str(",\"value\":");
-                        output.push_str(if bool_value { "true" } else { "false" });
+                        write_json_string(output, value);
                     }
-                    JsxAttributeType::Expression => {
-                        let expr = if let Some(val_tok) = attr.value_token {
-                            ast.token_slice(val_tok).trim()
-                        } else {
-                            ""
-                        };
+                    JsxAttributeValue::Boolean(value) => {
                         output.push_str(",\"value\":");
-                        write_json_string(output, expr);
+                        output.push_str(if *value { "true" } else { "false" });
+                    }
+                    JsxAttributeValue::Expression(value) => {
+                        output.push_str(",\"value\":");
+                        write_json_string(output, value);
                     }
                 }
 
@@ -404,13 +286,9 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         }
 
         NodeTag::Frontmatter => {
-            let info = ast.frontmatter_info(node_idx);
-            let range = Range {
-                start: info.content_start,
-                end: info.content_end,
-            };
+            let info = frontmatter_view(ast, node_idx);
 
-            let format_str = match info.format {
+            let format_str = match info.map(|value| value.format).unwrap_or(FrontmatterFormat::Yaml) {
                 FrontmatterFormat::Yaml => "yaml",
                 FrontmatterFormat::Json => "json",
             };
@@ -418,56 +296,14 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
             output.push_str(format_str);
             output.push('"');
 
-            let mut fm_start: u32 = u32::MAX;
-            let mut fm_end: u32 = 0;
-
-            for i in range.start..range.end {
-                let start = ast.token_starts[i as usize];
-                let end = if (i as usize + 1) < ast.token_starts.len() {
-                    ast.token_starts[i as usize + 1]
-                } else {
-                    ast.source.len() as u32
-                };
-                fm_start = fm_start.min(start);
-                fm_end = fm_end.max(end);
-            }
-
-            let content = if fm_start < fm_end {
-                ast.source[fm_start as usize..fm_end as usize].trim()
-            } else {
-                ""
-            };
-
             output.push_str(",\"value\":");
-            write_json_string(output, content);
+            write_json_string(output, info.map(|value| value.value).unwrap_or(""));
         }
 
         NodeTag::MdxTextExpression | NodeTag::MdxFlowExpression => {
-            if let NodeData::Extra(idx) = node.data {
-                let range = ast.extra_range(idx);
-
-                let mut expr_start: u32 = u32::MAX;
-                let mut expr_end: u32 = 0;
-
-                for i in range.start..range.end {
-                    let start = ast.token_starts[i as usize];
-                    let end = if (i as usize + 1) < ast.token_starts.len() {
-                        ast.token_starts[i as usize + 1]
-                    } else {
-                        ast.source.len() as u32
-                    };
-                    expr_start = expr_start.min(start);
-                    expr_end = expr_end.max(end);
-                }
-
-                let content = if expr_start < expr_end {
-                    ast.source[expr_start as usize..expr_end as usize].trim()
-                } else {
-                    ""
-                };
-
+            if let Some(info) = expression_info(ast, node_idx) {
                 output.push_str(",\"value\":");
-                write_json_string(output, content);
+                write_json_string(output, info.value);
             }
         }
 
@@ -554,6 +390,7 @@ fn serialize_node(ast: &Ast, node_idx: NodeIndex, output: &mut String, options: 
         | NodeTag::Blockquote
         | NodeTag::Strong
         | NodeTag::Emphasis
+        | NodeTag::Strikethrough
         | NodeTag::MdxJsxFragment => {
             output.push_str(",\"children\":[");
             let children = ast.children(node_idx);
