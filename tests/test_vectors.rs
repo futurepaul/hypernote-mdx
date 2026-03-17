@@ -1,11 +1,11 @@
-/// Test that all test vector files from the Zig project parse without panicking
-/// and produce valid JSON output.
+/// Test that the vendored test vector files parse without panicking and produce
+/// valid JSON output.
 
-const HELLO: &str = include_str!("../../zig-mdx/test_vectors/hello.hnmd");
-const FEED: &str = include_str!("../../zig-mdx/test_vectors/feed.hnmd");
-const PATHOLOGICAL: &str = include_str!("../../zig-mdx/test_vectors/pathological.hnmd");
-const TEST_CASES: &str = include_str!("../../zig-mdx/test_vectors/test_cases.md");
-const FAILED_ALLOC: &str = include_str!("../../zig-mdx/test_vectors/failed_to_allocate_memory.md");
+const HELLO: &str = include_str!("test_vectors/hello.hnmd");
+const FEED: &str = include_str!("test_vectors/feed.hnmd");
+const PATHOLOGICAL: &str = include_str!("test_vectors/pathological.hnmd");
+const TEST_CASES: &str = include_str!("test_vectors/test_cases.md");
+const FAILED_ALLOC: &str = include_str!("test_vectors/failed_to_allocate_memory.md");
 
 fn parse_and_check(name: &str, source: &str) {
     let ast = hypernote_mdx::parse(source);
